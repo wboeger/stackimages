@@ -93,6 +93,10 @@ details { font-size: 0.88rem }
 details summary { cursor: pointer; font-weight: 600 }
 details p, details li { color: var(--muted); max-width: 70ch }
 #cmpRange { margin-top: 2px }
+.cmpbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px }
+.cmpbar label { white-space: nowrap }
+.cmpbar select { width: auto; max-width: 100%; min-width: 0; flex: 1 1 220px }
+.cmpbar .hint { flex-basis: 100% }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important } }
 </style>
 
@@ -174,7 +178,7 @@ details p, details li { color: var(--muted); max-width: 70ch }
           <button class="btn" id="savePng" type="button" disabled>Save PNG</button>
           <button class="btn" id="saveJpg" type="button" disabled>Save JPEG</button>
           <button class="btn" id="saveDepth" type="button" disabled>Save depth map</button>
-          <button class="btn" id="saveRef" type="button" disabled title="The middle photo, aligned and cropped exactly like the result">Save middle slice</button>
+          <button class="btn" id="saveRef" type="button" disabled title="The slice shown in Compare, aligned and cropped exactly like the result">Save compared slice</button>
         </div>
       </div>
       <div class="stage fit" id="stage">
@@ -184,11 +188,16 @@ details p, details li { color: var(--muted); max-width: 70ch }
           <canvas id="cvRef" width="8" height="8"></canvas>
           <canvas id="cvCmpTop" width="8" height="8"></canvas>
           <div class="handle" id="cmpHandle"></div>
-          <span class="tag" style="left:8px">Single photo (middle slice)</span>
+          <span class="tag" id="cmpTag" style="left:8px">Single photo</span>
           <span class="tag" style="right:8px">Stacked</span>
         </div>
       </div>
       <input type="range" id="cmpRange" min="0" max="100" value="50" aria-label="Compare divider position" hidden>
+      <div class="cmpbar" id="cmpBar" hidden>
+        <label for="cmpSel">Compare stacked result with</label>
+        <select id="cmpSel"></select>
+        <span class="hint">Each slice is shown aligned and cropped like the result. Drag on the image or use the slider to move the divider.</span>
+      </div>
       <div class="legend" id="legend" hidden><span>slice 1 · near</span><span class="ramp" id="ramp"></span><span id="legendFar">far</span></div>
       <div class="stats" id="stats"></div>
       <details>
@@ -232,11 +241,20 @@ self.onmessage = async (ev) => {
   try {
     if (d.type === 'demo') return post({ type: 'demo', files: await makeDemo(d) });
     if (d.type === 'run') return await run(d.files, d.opts);
+    if (d.type === 'slice') return await sendSlice(d.k);
   } catch (e) {
     post({ type: 'error', message: (e && e.name === 'RangeError') ? 'Ran out of memory. Choose a smaller working size and try again.' : String(e && e.message || e) });
   }
 };
 
+let last = null; // geometry of the most recent stack, for on-demand aligned slices
+async function sendSlice(k) {
+  if (!last || !last.files[k]) return;
+  const { files, Ms, W, H, R, shiftR } = last;
+  const rgb = toPlanar(await bitmapPixels(files[k], W, H), W * H).map(c => Engine.warp(c, W, H, Engine.mul3(Ms[k], shiftR), R.w, R.h));
+  const rgba = toRGBA(rgb, R.w * R.h);
+  post({ type: 'slice', k, rgba, w: R.w, h: R.h }, [rgba.buffer]);
+}
 async function run(files, o) {
   const n = files.length, t0 = performance.now();
   const bm0 = await createImageBitmap(files[0]);
@@ -260,6 +278,7 @@ async function run(files, o) {
   const shiftR = [1, 0, R.x, 0, 1, R.y, 0, 0, 1];
   const F = new Engine.Fuser(R.w, R.h, n, { method: o.method, smooth: o.smooth * Math.max(1, Math.max(W, H) / 3000) });
   let refRGBA = null;
+  last = { files, Ms, W, H, R, shiftR };
   for (let i = 0; i < n; i++) {
     post({ type: 'progress', phase: 'Blending', i: i + 1, n, frac: 0.35 + 0.6 * i / n });
     const px = await bitmapPixels(files[i], W, H);
@@ -314,6 +333,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   }
 
   let frames = []; // {file, url, isSample}
+  let stackNames = [];
   let result = null, view = 'result', zoomFull = false, busy = false, downloads = null;
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
@@ -376,6 +396,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   $('goBtn').onclick = () => {
     if (frames.length < 2 || busy) return;
     busy = true; $('goBtn').disabled = true; setStatus('Starting…'); setBar(0.01);
+    stackNames = frames.map(f => f.file.name);
     getWorker().postMessage({ type: 'run', files: frames.map(f => f.file), opts: {
       method: $('method').value, align: $('align').value, smooth: +$('smooth').value, maxPixels: +$('size').value, crop: $('crop').checked } });
   };
@@ -389,8 +410,14 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     else if (d.type === 'motion') renderFrames(d.motion);
     else if (d.type === 'error') fail(d.message);
     else if (d.type === 'demo') { addFiles(d.files, true); $('goBtn').click(); }
+    else if (d.type === 'slice') {
+      if (!result || d.k !== +$('cmpSel').value) return;
+      put($('cvRef'), d.rgba, d.w, d.h); result.cmpIndex = d.k;
+      $('cmpTag').textContent = `Slice ${d.k + 1}`; $('cmpSel').disabled = false; $('saveRef').disabled = false;
+    }
     else if (d.type === 'result') {
-      busy = false; setBar(1); result = d;
+      busy = false; setBar(1); result = d; result.names = stackNames; result.cmpIndex = d.refIndex;
+      fillCmpSel();
       setStatus(`Done in ${(d.ms / 1000).toFixed(1)} s`);
       draw(); renderStats(); renderFrames(d.motion);
       ['savePng', 'saveJpg', 'saveDepth', 'saveRef'].forEach(id => $(id).disabled = false);
@@ -424,7 +451,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     view = v;
     document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
     $('cvResult').hidden = v !== 'result'; $('cvDepth').hidden = v !== 'depth'; $('cmpBox').hidden = v !== 'compare';
-    $('cmpRange').hidden = v !== 'compare'; $('legend').hidden = v !== 'depth';
+    $('cmpRange').hidden = v !== 'compare'; $('cmpBar').hidden = v !== 'compare' || !result; $('legend').hidden = v !== 'depth';
   }
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setView(b.dataset.view));
   function updateCmp() {
@@ -433,6 +460,21 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     $('cmpHandle').style.left = `calc(${p}% - 1px)`;
   }
   $('cmpRange').oninput = updateCmp;
+  function fillCmpSel() {
+    const sel = $('cmpSel'); sel.textContent = '';
+    result.names.forEach((nm, k) => {
+      const o = document.createElement('option'); o.value = k;
+      o.textContent = `Slice ${k + 1}${k === result.refIndex ? ' (middle)' : ''} · ${nm}`;
+      sel.appendChild(o);
+    });
+    sel.value = result.refIndex; sel.disabled = false;
+    $('cmpTag').textContent = `Slice ${result.refIndex + 1}`;
+  }
+  $('cmpSel').onchange = () => {
+    if (!result || busy) return;
+    $('cmpSel').disabled = true; $('saveRef').disabled = true; $('cmpTag').textContent = 'Loading…';
+    getWorker().postMessage({ type: 'slice', k: +$('cmpSel').value });
+  };
   $('zoomBtn').onclick = () => {
     zoomFull = !zoomFull; const st = $('stage');
     st.classList.toggle('fit', !zoomFull); st.classList.toggle('full', zoomFull);
@@ -462,8 +504,9 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   $('savePng').onclick = () => save('cvResult', baseName() + '.png', 'image/png');
   $('saveJpg').onclick = () => save('cvResult', baseName() + '.jpg', 'image/jpeg', 0.95);
   $('saveRef').onclick = () => {
-    const n = result ? result.refIndex + 1 : 0, f = frames[n - 1];
-    save('cvRef', (f ? f.file.name.replace(/\.[^.]+$/, '') : 'slice_' + n) + '_aligned.png', 'image/png');
+    if (!result) return;
+    const k = result.cmpIndex, nm = result.names[k];
+    save('cvRef', (nm ? nm.replace(/\.[^.]+$/, '') : 'slice_' + (k + 1)) + '_aligned.png', 'image/png');
   };
   $('saveDepth').onclick = () => save('cvDepth', baseName().replace(/_stacked$/, '') + '_depthmap.png', 'image/png');
   if (window.claude && window.claude.use) window.claude.use('downloads').then(d => { downloads = d; }).catch(() => {});

@@ -12,8 +12,8 @@ A browser app for **focus stacking**. It merges photos of one scene taken at dif
   - **Laplacian pyramid** (default): keeps detail band by band, with few halos.
   - **Depth map**: copies each pixel from its sharpest photo, so colours stay exactly as shot.
 - Depth map output (which photo was sharpest at each pixel), shown with a perceptually uniform colour map.
-- Before/after comparison slider, and a readout of the scale and shift corrected for each photo.
-- Save the result (PNG or JPEG), the depth map, the aligned middle photo, or any single input photo.
+- Before/after comparison slider against any slice you choose, and a readout of the scale and shift corrected for each photo.
+- Save the result (PNG or JPEG), the depth map, any aligned slice (the one shown in Compare), or any single input photo.
 - A built-in synthetic test stack, so the app shows a working example as soon as it opens.
 
 ## Method
