@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>body{margin:0;font-size:14px}img{max-width:100%}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Focus Stacker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: instrument-panel sidebar (frames + settings) beside a large inspection viewer; stacks to one column on phones. */
+:root {
+  --bg: #eef1f2; --panel: #ffffff; --ink: #14191c; --muted: #5b676d; --line: #d5dcdf;
+  --accent: #077a86; --accent-ink: #ffffff; --peak: #d6336c; --well: #e3e8ea;
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1315; --panel: #171c1f; --ink: #e4eaec; --muted: #93a1a7; --line: #2a3236;
+  --accent: #3fc9d6; --accent-ink: #062226; --peak: #ff6b9a; --well: #0a0d0f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f1315; --panel: #171c1f; --ink: #e4eaec; --muted: #93a1a7; --line: #2a3236;
+  --accent: #3fc9d6; --accent-ink: #062226; --peak: #ff6b9a; --well: #0a0d0f; color-scheme: dark }
+* { box-sizing: border-box }
+[hidden] { display: none !important }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--f-body); }
+.wrap { max-width: 1320px; margin: 0 auto; padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; margin-bottom: 16px }
+h1 { font: 800 1.7rem/1.1 var(--f-display); letter-spacing: -0.01em; margin: 0; text-wrap: balance }
+h1 .dot { color: var(--peak) }
+.lede { color: var(--muted); margin: 0; max-width: 64ch }
+.grid { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 16px; align-items: start }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr) } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; min-width: 0 }
+.side { display: flex; flex-direction: column; gap: 14px }
+h2 { font: 700 0.78rem/1 var(--f-display); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); margin: 0 0 10px }
+.drop { border: 1.5px dashed var(--line); border-radius: var(--r); padding: 18px 12px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s }
+.drop:hover, .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent) }
+.drop strong { display: block; font-weight: 600 }
+.drop span { color: var(--muted); font-size: 0.85rem }
+.frames { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto }
+.frames li { display: grid; grid-template-columns: 26px 44px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 3px 4px; border-radius: 6px }
+.frames li:hover { background: var(--well) }
+.frames .ix { font: 500 0.75rem var(--f-mono); color: var(--muted); text-align: right }
+.frames img { width: 44px; height: 30px; object-fit: cover; border-radius: 3px; background: var(--well); display: block }
+.frames .nm { font-size: 0.82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.frames .mv { font: 0.7rem var(--f-mono); color: var(--muted); display: block }
+.frames button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 4px }
+.frames button:hover { color: var(--peak) }
+.frames button.dl:hover { color: var(--accent) }
+.meta { display: flex; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--muted); margin-top: 8px }
+.linkbtn { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0 }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px }
+.field:last-child { margin-bottom: 0 }
+label { font-size: 0.85rem; font-weight: 500 }
+.hint { font-size: 0.78rem; color: var(--muted) }
+select, input[type=range] { width: 100%; font: inherit }
+select { padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink) }
+input[type=range] { accent-color: var(--accent) }
+.check { flex-direction: row; align-items: center; gap: 8px }
+.check input { accent-color: var(--accent); width: 16px; height: 16px }
+.go { width: 100%; padding: 11px; border: 0; border-radius: var(--r); background: var(--accent); color: var(--accent-ink); font: 700 1rem var(--f-display); cursor: pointer; letter-spacing: .01em }
+.go:disabled { opacity: .5; cursor: default }
+button:focus-visible, select:focus-visible, input:focus-visible, .drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.progress { height: 6px; background: var(--well); border-radius: 3px; overflow: hidden; margin-top: 10px }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s }
+.status { font: 0.8rem var(--f-mono); color: var(--muted); margin-top: 6px; min-height: 1.2em }
+.status.err { color: var(--peak) }
+.viewer { display: flex; flex-direction: column; gap: 10px }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between }
+.tabs { display: inline-flex; background: var(--well); border-radius: 7px; padding: 3px; gap: 2px }
+.tabs button { border: 0; background: none; color: var(--muted); padding: 6px 12px; border-radius: 5px; font: 500 0.85rem var(--f-body); cursor: pointer }
+.tabs button[aria-selected=true] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .12) }
+.tools { display: flex; flex-wrap: wrap; gap: 6px }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 11px; border-radius: 6px; font: 500 0.85rem var(--f-body); cursor: pointer }
+.btn:hover { border-color: var(--accent) }
+.btn:disabled { opacity: .45; cursor: default }
+.stage { position: relative; background: var(--well); border-radius: var(--r); overflow: auto; max-height: 72vh; min-height: 260px; display: grid; place-items: center }
+.stage.fit canvas { max-width: 100%; max-height: 72vh; width: auto; height: auto }
+.stage.full { place-items: start }
+.stage canvas { display: block; image-rendering: auto }
+.stage.full canvas { max-width: none }
+.cmp { position: relative; display: inline-block; line-height: 0 }
+.cmp canvas + canvas { position: absolute; inset: 0; width: 100%; height: 100% }
+.cmp .handle { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--peak); pointer-events: none }
+.cmp .tag { position: absolute; top: 8px; font: 500 0.72rem/1 var(--f-mono); background: rgb(0 0 0 / .6); color: #fff; padding: 4px 6px; border-radius: 4px }
+.legend { display: flex; align-items: center; gap: 10px; font: 0.78rem var(--f-mono); color: var(--muted) }
+.legend .ramp { flex: 1; height: 10px; border-radius: 3px; max-width: 320px }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px }
+.stat { background: var(--well); border-radius: 6px; padding: 8px 10px; min-width: 0 }
+.stat b { display: block; font: 500 1rem var(--f-mono); font-variant-numeric: tabular-nums }
+.stat span { font-size: 0.75rem; color: var(--muted) }
+.sample { font: 500 0.72rem var(--f-mono); color: var(--peak); border: 1px solid currentColor; border-radius: 4px; padding: 1px 6px; vertical-align: middle }
+details { font-size: 0.88rem }
+details summary { cursor: pointer; font-weight: 600 }
+details p, details li { color: var(--muted); max-width: 70ch }
+#cmpRange { margin-top: 2px }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Focus Stacker<span class="dot">.</span></h1>
+    <p class="lede">Merge photos shot at different focus distances into one image that is sharp from front to back. Everything runs in this browser tab; your photos are never uploaded.</p>
+  </header>
+
+  <div class="grid">
+    <aside class="side">
+      <section class="panel" aria-labelledby="h-frames">
+        <h2 id="h-frames">Focus slices</h2>
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Add photos">
+          <strong>Drop photos here or click to choose</strong>
+          <span>JPEG, PNG or WebP of one scene, same framing, focus stepped near to far</span>
+        </div>
+        <input type="file" id="file" accept="image/*" multiple hidden>
+        <ol class="frames" id="frames"></ol>
+        <div class="meta"><span id="frameCount">No photos yet</span><button class="linkbtn" id="clearBtn" type="button">Clear</button></div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-set">
+        <h2 id="h-set">Settings</h2>
+        <div class="field">
+          <label for="method">Blending method</label>
+          <select id="method">
+            <option value="pyramid" selected>Laplacian pyramid (best detail, fewest halos)</option>
+            <option value="depthmap">Depth map (pixel picking, truest colours)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="align">Alignment</label>
+          <select id="align">
+            <option value="similarity" selected>Shift, scale and rotation (fixes focus breathing)</option>
+            <option value="translation">Shift only</option>
+            <option value="none">Off (rail or microscope with fixed framing)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="smooth">Sharpness smoothing: <span id="smoothVal">3</span> px</label>
+          <input type="range" id="smooth" min="1" max="12" step="0.5" value="3">
+          <span class="hint">Higher values give cleaner depth maps and fewer speckles, lower values keep fine edges between near and far objects.</span>
+        </div>
+        <div class="field">
+          <label for="size">Working size</label>
+          <select id="size">
+            <option value="0" selected>Full resolution</option>
+            <option value="24000000">Up to 24 MP</option>
+            <option value="12000000">Up to 12 MP</option>
+            <option value="6000000">Up to 6 MP</option>
+            <option value="2000000">Up to 2 MP (quick preview)</option>
+          </select>
+          <span class="hint" id="memHint">&nbsp;</span>
+        </div>
+        <div class="field check">
+          <input type="checkbox" id="crop" checked>
+          <label for="crop">Crop to the area every photo covers</label>
+        </div>
+      </section>
+
+      <div>
+        <button class="go" id="goBtn" type="button" disabled>Stack photos</button>
+        <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+        <div class="status" id="status" role="status"></div>
+      </div>
+    </aside>
+
+    <main class="panel viewer" aria-labelledby="h-view">
+      <h2 id="h-view" hidden>Result</h2>
+      <div class="bar">
+        <div class="tabs" role="tablist">
+          <button role="tab" id="tabResult" aria-selected="true" data-view="result">Result</button>
+          <button role="tab" id="tabDepth" aria-selected="false" data-view="depth">Depth map</button>
+          <button role="tab" id="tabCmp" aria-selected="false" data-view="compare">Compare</button>
+        </div>
+        <div class="tools">
+          <button class="btn" id="zoomBtn" type="button">View 1:1</button>
+          <button class="btn" id="savePng" type="button" disabled>Save PNG</button>
+          <button class="btn" id="saveJpg" type="button" disabled>Save JPEG</button>
+          <button class="btn" id="saveDepth" type="button" disabled>Save depth map</button>
+          <button class="btn" id="saveRef" type="button" disabled title="The middle photo, aligned and cropped exactly like the result">Save middle slice</button>
+        </div>
+      </div>
+      <div class="stage fit" id="stage">
+        <canvas id="cvResult" width="8" height="8"></canvas>
+        <canvas id="cvDepth" width="8" height="8" hidden></canvas>
+        <div class="cmp" id="cmpBox" hidden>
+          <canvas id="cvRef" width="8" height="8"></canvas>
+          <canvas id="cvCmpTop" width="8" height="8"></canvas>
+          <div class="handle" id="cmpHandle"></div>
+          <span class="tag" style="left:8px">Single photo (middle slice)</span>
+          <span class="tag" style="right:8px">Stacked</span>
+        </div>
+      </div>
+      <input type="range" id="cmpRange" min="0" max="100" value="50" aria-label="Compare divider position" hidden>
+      <div class="legend" id="legend" hidden><span>slice 1 · near</span><span class="ramp" id="ramp"></span><span id="legendFar">far</span></div>
+      <div class="stats" id="stats"></div>
+      <details>
+        <summary>How it works, and tips for shooting</summary>
+        <ol>
+          <li><b>Alignment.</b> Refocusing a lens changes its focal length slightly (focus breathing), so each slice is a little larger or smaller than the last. Every photo is matched to its neighbour with a coarse-to-fine Gauss–Newton fit of a shift, scale and rotation, using brightness-normalised intensities so that blur differences do not bias the fit. The fits are chained outward from the middle slice.</li>
+          <li><b>Sharpness.</b> For every pixel the app measures local energy of the Laplacian of Gaussian: in-focus detail has strong second derivatives, defocus is a low-pass filter that removes them.</li>
+          <li><b>Blending.</b> The pyramid method splits each photo into frequency bands and keeps, per band and pixel, the coefficient from the sharpest slice, which avoids hard seams. The depth map method copies each pixel from its sharpest slice.</li>
+          <li><b>Depth map.</b> The index of the sharpest slice at each pixel, a coarse relief map of the subject. Flat, textureless areas have no sharpness signal, so their depth is noise.</li>
+        </ol>
+        <p>Shoot from a tripod with manual exposure and white balance, and overlap the depth of field of neighbouring slices. Keep the photos in focus order (by file name) so neighbours are similar. Large stacks at full resolution can take a few minutes and over 1 GB of memory; use a smaller working size for a quick preview first.</p>
+      </details>
+    </main>
+  </div>
+</div>
+
+<script type="text/plain" id="engine-src">
+/* Focus-stacking engine: pure typed-array image math, no DOM.
+ * Images are planar Float32Array channels in [0,1], row-major, size w*h.
+ * Runs inside a Web Worker in the app, and under Node for tests. */
+'use strict';
+
+// ---------- basic filters ----------
+function gaussKernel(sigma) {
+  const r = Math.max(1, Math.ceil(3 * sigma));
+  const k = new Float32Array(2 * r + 1);
+  let s = 0;
+  for (let i = -r; i <= r; i++) { const v = Math.exp(-(i * i) / (2 * sigma * sigma)); k[i + r] = v; s += v; }
+  for (let i = 0; i < k.length; i++) k[i] /= s;
+  return k;
+}
+
+// Separable convolution with clamped borders. dst may be a new array.
+function convSep(src, w, h, k, dst, tmp) {
+  const r = (k.length - 1) >> 1;
+  tmp = tmp || new Float32Array(w * h);
+  dst = dst || new Float32Array(w * h);
+  // horizontal
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      if (x >= r && x < w - r) {
+        const b = o + x - r;
+        for (let i = 0; i < k.length; i++) s += k[i] * src[b + i];
+      } else {
+        for (let i = -r; i <= r; i++) {
+          let xx = x + i; xx = xx < 0 ? 0 : xx >= w ? w - 1 : xx;
+          s += k[i + r] * src[o + xx];
+        }
+      }
+      tmp[o + x] = s;
+    }
+  }
+  // vertical
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    if (y >= r && y < h - r) {
+      for (let x = 0; x < w; x++) dst[o + x] = 0;
+      for (let i = 0; i < k.length; i++) {
+        const ki = k[i], ro = (y + i - r) * w;
+        for (let x = 0; x < w; x++) dst[o + x] += ki * tmp[ro + x];
+      }
+    } else {
+      for (let x = 0; x < w; x++) {
+        let s = 0;
+        for (let i = -r; i <= r; i++) {
+          let yy = y + i; yy = yy < 0 ? 0 : yy >= h ? h - 1 : yy;
+          s += k[i + r] * tmp[yy * w + x];
+        }
+        dst[o + x] = s;
+      }
+    }
+  }
+  return dst;
+}
+
+function gaussBlur(src, w, h, sigma, dst, tmp) {
+  if (sigma <= 0) { dst = dst || new Float32Array(src.length); dst.set(src); return dst; }
+  return convSep(src, w, h, gaussKernel(sigma), dst, tmp);
+}
+
+const BINOM = new Float32Array([1 / 16, 4 / 16, 6 / 16, 4 / 16, 1 / 16]);
+
+// Burt–Adelson REDUCE: binomial 5-tap blur evaluated only at the kept (even) samples.
+function pyrDown(src, w, h) {
+  const w2 = (w + 1) >> 1, h2 = (h + 1) >> 1;
+  const tmp = new Float32Array(w2 * h);
+  for (let y = 0; y < h; y++) {
+    const o = y * w, t = y * w2;
+    for (let x = 0; x < w2; x++) {
+      const c = 2 * x;
+      const a = c - 2 < 0 ? 0 : c - 2, b = c - 1 < 0 ? 0 : c - 1, d = c + 1 > w - 1 ? w - 1 : c + 1, f = c + 2 > w - 1 ? w - 1 : c + 2;
+      tmp[t + x] = 0.0625 * (src[o + a] + src[o + f]) + 0.25 * (src[o + b] + src[o + d]) + 0.375 * src[o + c];
+    }
+  }
+  const out = new Float32Array(w2 * h2);
+  for (let y = 0; y < h2; y++) {
+    const c = 2 * y;
+    const ra = (c - 2 < 0 ? 0 : c - 2) * w2, rb = (c - 1 < 0 ? 0 : c - 1) * w2, rc = c * w2,
+      rd = (c + 1 > h - 1 ? h - 1 : c + 1) * w2, rf = (c + 2 > h - 1 ? h - 1 : c + 2) * w2, oo = y * w2;
+    for (let x = 0; x < w2; x++)
+      out[oo + x] = 0.0625 * (tmp[ra + x] + tmp[rf + x]) + 0.25 * (tmp[rb + x] + tmp[rd + x]) + 0.375 * tmp[rc + x];
+  }
+  return { data: out, w: w2, h: h2 };
+}
+
+// Box filter (radius r) via running sums, clamped borders; two passes ≈ Gaussian with σ² = 2r(r+1)/3.
+function boxBlur(src, w, h, r, dst) {
+  const tmp = new Float32Array(w * h); dst = dst || new Float32Array(w * h);
+  const norm = 1 / (2 * r + 1);
+  for (let y = 0; y < h; y++) {
+    const o = y * w; let s = 0;
+    for (let i = -r; i <= r; i++) s += src[o + (i < 0 ? 0 : i > w - 1 ? w - 1 : i)];
+    for (let x = 0; x < w; x++) {
+      tmp[o + x] = s * norm;
+      const add = x + r + 1, sub = x - r;
+      s += src[o + (add > w - 1 ? w - 1 : add)] - src[o + (sub < 0 ? 0 : sub)];
+    }
+  }
+  const col = new Float32Array(w);
+  for (let x = 0; x < w; x++) col[x] = 0;
+  for (let i = -r; i <= r; i++) { const ro = (i < 0 ? 0 : i > h - 1 ? h - 1 : i) * w; for (let x = 0; x < w; x++) col[x] += tmp[ro + x]; }
+  for (let y = 0; y < h; y++) {
+    const o = y * w, ra = (y + r + 1 > h - 1 ? h - 1 : y + r + 1) * w, rs = (y - r < 0 ? 0 : y - r) * w;
+    for (let x = 0; x < w; x++) { dst[o + x] = col[x] * norm; col[x] += tmp[ra + x] - tmp[rs + x]; }
+  }
+  return dst;
+}
+function smoothFast(src, w, h, sigma) {
+  const r = Math.max(1, Math.round((Math.sqrt(1 + 6 * sigma * sigma) - 1) / 2));
+  return boxBlur(boxBlur(src, w, h, r), w, h, r);
+}
+
+// Burt–Adelson EXPAND to size (w,h) from coarse (cw,ch).
+function pyrUp(c, cw, ch, w, h) {
+  const tmp = new Float32Array(cw * h);
+  // vertical expand: rows
+  for (let y = 0; y < h; y++) {
+    const i = y >> 1;
+    const i0 = Math.max(i - 1, 0), i1 = Math.min(i, ch - 1), i2 = Math.min(i + 1, ch - 1);
+    const o = y * cw;
+    if (y & 1) {
+      for (let x = 0; x < cw; x++) tmp[o + x] = 0.5 * (c[i1 * cw + x] + c[i2 * cw + x]);
+    } else {
+      for (let x = 0; x < cw; x++) tmp[o + x] = 0.125 * c[i0 * cw + x] + 0.75 * c[i1 * cw + x] + 0.125 * c[i2 * cw + x];
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const ro = y * cw, oo = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = x >> 1;
+      const i1 = Math.min(i, cw - 1), i2 = Math.min(i + 1, cw - 1);
+      if (x & 1) out[oo + x] = 0.5 * (tmp[ro + i1] + tmp[ro + i2]);
+      else { const i0 = Math.max(i - 1, 0); out[oo + x] = 0.125 * tmp[ro + i0] + 0.75 * tmp[ro + i1] + 0.125 * tmp[ro + i2]; }
+    }
+  }
+  return out;
+}
+
+function luminance(r, g, b) {
+  const n = r.length, y = new Float32Array(n);
+  for (let i = 0; i < n; i++) y[i] = 0.299 * r[i] + 0.587 * g[i] + 0.114 * b[i];
+  return y;
+}
+
+// Focus measure: local energy of the Laplacian-of-Gaussian.
+// E = G_s * (∇² (G_1 * Y))²   (s = smoothing radius in px)
+function focusEnergy(Y, w, h, smooth) {
+  const g = convSep(Y, w, h, BINOM); // σ ≈ 1 px
+  const lap = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const ym = y > 0 ? y - 1 : 0, yp = y < h - 1 ? y + 1 : h - 1;
+    for (let x = 0; x < w; x++) {
+      const xm = x > 0 ? x - 1 : 0, xp = x < w - 1 ? x + 1 : w - 1, i = y * w + x;
+      const v = g[y * w + xm] + g[y * w + xp] + g[ym * w + x] + g[yp * w + x] - 4 * g[i];
+      lap[i] = v * v;
+    }
+  }
+  return smoothFast(lap, w, h, smooth);
+}
+
+// ---------- geometry ----------
+// 3x3 matrices as length-9 arrays, row-major. Maps reference px -> frame px.
+const I3 = () => [1, 0, 0, 0, 1, 0, 0, 0, 1];
+function mul3(a, b) {
+  const o = new Array(9);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++)
+    o[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+  return o;
+}
+function inv3(m) {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det,
+          B / det, (a * i - c * g) / det, -(a * f - c * d) / det,
+          C / det, -(a * h - b * g) / det, (a * e - b * d) / det];
+}
+
+// Bilinear warp: out(x) = src(M·x), clamped borders. Also returns validity mask if asked.
+function warp(src, w, h, M, ow, oh, mask) {
+  ow = ow || w; oh = oh || h;
+  const out = new Float32Array(ow * oh);
+  const [a, b, c, d, e, f] = M;
+  for (let y = 0; y < oh; y++) {
+    let sx = b * y + c, sy = e * y + f;
+    const o = y * ow;
+    for (let x = 0; x < ow; x++, sx += a, sy += d) {
+      let X = sx, Y = sy, inside = 1;
+      if (X < 0) { X = 0; inside = 0; } else if (X > w - 1) { X = w - 1; inside = 0; }
+      if (Y < 0) { Y = 0; inside = 0; } else if (Y > h - 1) { Y = h - 1; inside = 0; }
+      const x0 = X | 0, y0 = Y | 0;
+      const x1 = x0 < w - 1 ? x0 + 1 : x0, y1 = y0 < h - 1 ? y0 + 1 : y0;
+      const fx = X - x0, fy = Y - y0;
+      const p = y0 * w, q = y1 * w;
+      out[o + x] = (src[p + x0] * (1 - fx) + src[p + x1] * fx) * (1 - fy) + (src[q + x0] * (1 - fx) + src[q + x1] * fx) * fy;
+      if (mask) mask[o + x] = inside;
+    }
+  }
+  return out;
+}
+
+function solve(A, bv) { // Gaussian elimination with partial pivoting, n<=6
+  const n = bv.length, M = A.map((r, i) => [...r, bv[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    if (Math.abs(M[c][c]) < 1e-12) return null;
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = M[r][n];
+    for (let k = r + 1; k < n; k++) s -= M[r][k] * x[k];
+    x[r] = s / M[r][r];
+  }
+  return x;
+}
+
+// params -> centered linear map. model: 'translation' (tx,ty) | 'similarity' (a,b,tx,ty)
+function paramsToCentered(p, model) {
+  if (model === 'translation') return [1, 0, p[0], 0, 1, p[1]];
+  return [1 + p[0], -p[1], p[2], p[1], 1 + p[0], p[3]];
+}
+// centered map (about image centre cx,cy) -> pixel-coordinate 3x3
+function centeredToPixel(L, cx, cy) {
+  const [a, b, tx, d, e, ty] = L;
+  return [a, b, tx + cx - a * cx - b * cy, d, e, ty + cy - d * cx - e * cy, 0, 0, 1];
+}
+
+/* Estimate M (template px -> moving px) such that I(M x) ≈ T(x).
+ * Coarse-to-fine Gauss–Newton on zero-mean, unit-variance intensities
+ * (an ECC-style criterion: invariant to brightness/contrast changes). */
+function estimateMotion(T, I, w, h, model, init) {
+  const np = model === 'translation' ? 2 : 4;
+  const pyr = [{ T, I, w, h }];
+  while (pyr.length < 6) {
+    const l = pyr[pyr.length - 1];
+    if (Math.min(l.w, l.h) < 80) break;
+    const t = pyrDown(l.T, l.w, l.h), i = pyrDown(l.I, l.w, l.h);
+    pyr.push({ T: t.data, I: i.data, w: t.w, h: t.h });
+  }
+  let p = init ? init.slice() : new Array(np).fill(0);
+  // scale translation to coarsest level
+  const tIdx = model === 'translation' ? [0, 1] : [2, 3];
+  const L = pyr.length - 1;
+  for (const k of tIdx) p[k] /= 2 ** L;
+  let lastErr = Infinity;
+  for (let lev = L; lev >= 0; lev--) {
+    const { T: Tl, I: Il, w: wl, h: hl } = pyr[lev];
+    const cx = (wl - 1) / 2, cy = (hl - 1) / 2;
+    // template stats & gradients are not needed (forward additive); normalise T once
+    let mT = 0; for (let i = 0; i < Tl.length; i++) mT += Tl[i]; mT /= Tl.length;
+    const iters = lev === 0 ? 15 : 30;
+    const mask = new Uint8Array(wl * hl);
+    for (let it = 0; it < iters; it++) {
+      const M = centeredToPixel(paramsToCentered(p, model), cx, cy);
+      const Iw = warp(Il, wl, hl, M, wl, hl, mask);
+      // stats over valid overlap (with a 2px margin)
+      let n = 0, sT = 0, sI = 0, sTT = 0, sII = 0;
+      for (let y = 2; y < hl - 2; y++) for (let x = 2; x < wl - 2; x++) {
+        const i = y * wl + x; if (!mask[i]) continue;
+        const t = Tl[i], v = Iw[i]; n++; sT += t; sI += v; sTT += t * t; sII += v * v;
+      }
+      if (n < 100) break;
+      const muT = sT / n, muI = sI / n;
+      const sdT = Math.sqrt(Math.max(sTT / n - muT * muT, 1e-12)), sdI = Math.sqrt(Math.max(sII / n - muI * muI, 1e-12));
+      const H = Array.from({ length: np }, () => new Array(np).fill(0));
+      const g = new Array(np).fill(0);
+      const J = new Array(np);
+      let err = 0;
+      for (let y = 2; y < hl - 2; y++) {
+        const yc = y - cy;
+        for (let x = 2; x < wl - 2; x++) {
+          const i = y * wl + x; if (!mask[i]) continue;
+          const gx = (Iw[i + 1] - Iw[i - 1]) * 0.5 / sdI, gy = (Iw[i + wl] - Iw[i - wl]) * 0.5 / sdI;
+          const xc = x - cx;
+          const e = (Tl[i] - muT) / sdT - (Iw[i] - muI) / sdI;
+          err += e * e;
+          if (np === 2) { J[0] = gx; J[1] = gy; }
+          else { J[0] = gx * xc + gy * yc; J[1] = -gx * yc + gy * xc; J[2] = gx; J[3] = gy; }
+          for (let r = 0; r < np; r++) { g[r] += J[r] * e; const Jr = J[r]; for (let c = r; c < np; c++) H[r][c] += Jr * J[c]; }
+        }
+      }
+      for (let r = 0; r < np; r++) for (let c = 0; c < r; c++) H[r][c] = H[c][r];
+      lastErr = err / n;
+      const dp = solve(H, g);
+      if (!dp) break;
+      for (let k = 0; k < np; k++) p[k] += dp[k];
+      const dt = Math.hypot(dp[tIdx[0]], dp[tIdx[1]]);
+      const ds = np === 4 ? Math.hypot(dp[0], dp[1]) * Math.max(wl, hl) / 2 : 0;
+      if (dt + ds < 0.01) break;
+    }
+    if (lev > 0) for (const k of tIdx) p[k] *= 2;
+  }
+  return { params: p, M: centeredToPixel(paramsToCentered(p, model), (w - 1) / 2, (h - 1) / 2), err: lastErr };
+}
+
+/* Align a whole stack from small grayscale proxies.
+ * grays: array of Float32Array (w*h each). Neighbour-to-neighbour chaining
+ * outward from the reference frame, since adjacent focus slices look most alike.
+ * Returns matrices mapping reference px -> frame px, in proxy coordinates. */
+function alignStack(grays, w, h, model, ref, onProgress) {
+  const n = grays.length;
+  const Ms = new Array(n); Ms[ref] = I3();
+  const errs = new Array(n).fill(0);
+  if (model === 'none') { for (let i = 0; i < n; i++) Ms[i] = I3(); return { Ms, errs }; }
+  const sm = grays.map(g => gaussBlur(g, w, h, 1.0));
+  let done = 0;
+  for (const dir of [1, -1]) {
+    for (let i = ref + dir; i >= 0 && i < n; i += dir) {
+      const prev = i - dir;
+      const r = estimateMotion(sm[prev], sm[i], w, h, model);
+      errs[i] = r.err;
+      Ms[i] = mul3(r.M, Ms[prev]); // ref -> prev -> i
+      done++; if (onProgress) onProgress(done, n - 1);
+    }
+  }
+  return { Ms, errs };
+}
+
+// Scale a proxy-coordinate matrix to full-resolution pixel coordinates (factor s = full/proxy).
+function scaleMatrix(M, s) {
+  const S = [s, 0, 0, 0, s, 0, 0, 0, 1], Si = [1 / s, 0, 0, 0, 1 / s, 0, 0, 0, 1];
+  return mul3(S, mul3(M, Si));
+}
+
+// Largest axis-aligned rectangle of reference coords that every frame covers (small-rotation approximation).
+function commonRect(Ms, w, h) {
+  let x0 = 0, y0 = 0, x1 = w - 1, y1 = h - 1;
+  for (const M of Ms) {
+    const Mi = inv3(M);
+    const P = (x, y) => [Mi[0] * x + Mi[1] * y + Mi[2], Mi[3] * x + Mi[4] * y + Mi[5]];
+    const tl = P(0, 0), tr = P(w - 1, 0), bl = P(0, h - 1), br = P(w - 1, h - 1);
+    x0 = Math.max(x0, tl[0], bl[0]); x1 = Math.min(x1, tr[0], br[0]);
+    y0 = Math.max(y0, tl[1], tr[1]); y1 = Math.min(y1, bl[1], br[1]);
+  }
+  x0 = Math.ceil(x0); y0 = Math.ceil(y0); x1 = Math.floor(x1); y1 = Math.floor(y1);
+  if (x1 - x0 < 16 || y1 - y0 < 16) return { x: 0, y: 0, w, h };
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+/* ---------- fusion ----------
+ * Streaming: frames are fed one at a time, so memory does not grow with N.
+ * Two methods:
+ *  'pyramid' — Laplacian-pyramid fusion: at each band keep the coefficient
+ *              of the frame with the highest local band energy; the coarsest
+ *              Gaussian level is averaged. Few halos, best detail.
+ *  'depthmap' — per pixel, take the colour of the frame with the highest
+ *               smoothed LoG energy (hard selection). Faithful colours, can
+ *               show seams at depth edges.
+ * Both also record the depth (index of sharpest frame) and its energy. */
+class Fuser {
+  constructor(w, h, n, opts) {
+    this.w = w; this.h = h; this.n = n; this.count = 0;
+    this.method = opts.method || 'pyramid';
+    this.smooth = opts.smooth || 3;
+    this.bestE = new Float32Array(w * h).fill(-1);
+    this.secondE = new Float32Array(w * h);
+    this.depth = new Uint16Array(w * h);
+    if (this.method === 'depthmap') {
+      this.out = [new Float32Array(w * h), new Float32Array(w * h), new Float32Array(w * h)];
+    } else {
+      let lw = w, lh = h; this.levels = [];
+      while (this.levels.length < 12 && Math.min(lw, lh) > 16) {
+        this.levels.push({ w: lw, h: lh, best: new Float32Array(lw * lh).fill(-1), L: [new Float32Array(lw * lh), new Float32Array(lw * lh), new Float32Array(lw * lh)] });
+        lw = (lw + 1) >> 1; lh = (lh + 1) >> 1;
+      }
+      this.top = { w: lw, h: lh, sum: [new Float32Array(lw * lh), new Float32Array(lw * lh), new Float32Array(lw * lh)] };
+    }
+  }
+  add(rgb, index) {
+    const { w, h } = this, n = w * h;
+    const Y = luminance(rgb[0], rgb[1], rgb[2]);
+    const E = focusEnergy(Y, w, h, this.smooth);
+    const sel = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const e = E[i];
+      if (e > this.bestE[i]) { this.secondE[i] = Math.max(this.bestE[i], 0); this.bestE[i] = e; this.depth[i] = index; sel[i] = 1; }
+      else if (e > this.secondE[i]) this.secondE[i] = e;
+    }
+    if (this.method === 'depthmap') {
+      for (let c = 0; c < 3; c++) { const o = this.out[c], s = rgb[c]; for (let i = 0; i < n; i++) if (sel[i]) o[i] = s[i]; }
+    } else {
+      let G = [rgb[0], rgb[1], rgb[2], Y];
+      for (let l = 0; l < this.levels.length; l++) {
+        const lev = this.levels[l], lw = lev.w, lh = lev.h, m = lw * lh;
+        const Gn = G.map(ch => pyrDown(ch, lw, lh));
+        const nw = Gn[0].w, nh = Gn[0].h;
+        const Lc = G.map((ch, c) => { const up = pyrUp(Gn[c].data, nw, nh, lw, lh); for (let i = 0; i < m; i++) up[i] = ch[i] - up[i]; return up; });
+        // band energy from luminance band, smoothed over ~5x5 neighbourhood
+        const e2 = new Float32Array(m); const LY = Lc[3];
+        for (let i = 0; i < m; i++) e2[i] = LY[i] * LY[i];
+        const eb = boxBlur(e2, lw, lh, 2);
+        const best = lev.best;
+        for (let i = 0; i < m; i++) if (eb[i] > best[i]) {
+          best[i] = eb[i]; lev.L[0][i] = Lc[0][i]; lev.L[1][i] = Lc[1][i]; lev.L[2][i] = Lc[2][i];
+        }
+        G = Gn.map(o => o.data);
+      }
+      for (let c = 0; c < 3; c++) { const s = this.top.sum[c]; const g = G[c]; for (let i = 0; i < s.length; i++) s[i] += g[i]; }
+    }
+    this.count++;
+  }
+  result() {
+    if (this.method === 'depthmap') return this.out;
+    const out = [];
+    for (let c = 0; c < 3; c++) {
+      let G = this.top.sum[c].map(v => v / this.count), gw = this.top.w, gh = this.top.h;
+      for (let l = this.levels.length - 1; l >= 0; l--) {
+        const lev = this.levels[l];
+        const up = pyrUp(G, gw, gh, lev.w, lev.h), Lb = lev.L[c];
+        for (let i = 0; i < up.length; i++) up[i] += Lb[i];
+        G = up; gw = lev.w; gh = lev.h;
+      }
+      for (let i = 0; i < G.length; i++) G[i] = G[i] < 0 ? 0 : G[i] > 1 ? 1 : G[i];
+      out.push(G);
+    }
+    return out;
+  }
+}
+
+const Engine = { boxBlur, smoothFast, gaussBlur, gaussKernel, pyrDown, pyrUp, luminance, focusEnergy, warp, mul3, inv3, estimateMotion, alignStack, scaleMatrix, commonRect, Fuser, I3 };
+if (typeof module !== 'undefined' && module.exports) module.exports = Engine;
+
+</script>
+
+<script type="text/plain" id="worker-src">
+'use strict';
+async function bitmapPixels(src, w, h) {
+  const bm = src instanceof ImageBitmap ? src : await createImageBitmap(src);
+  const c = new OffscreenCanvas(w, h), ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bm, 0, 0, w, h);
+  if (!(src instanceof ImageBitmap)) bm.close();
+  return ctx.getImageData(0, 0, w, h).data;
+}
+function toGray(px, n) { const g = new Float32Array(n); for (let i = 0, j = 0; i < n; i++, j += 4) g[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255; return g; }
+function toPlanar(px, n) { const r = new Float32Array(n), g = new Float32Array(n), b = new Float32Array(n); for (let i = 0, j = 0; i < n; i++, j += 4) { r[i] = px[j] / 255; g[i] = px[j + 1] / 255; b[i] = px[j + 2] / 255; } return [r, g, b]; }
+function toRGBA(ch, n) { const o = new Uint8ClampedArray(n * 4); for (let i = 0, j = 0; i < n; i++, j += 4) { o[j] = ch[0][i] * 255 + 0.5; o[j + 1] = ch[1][i] * 255 + 0.5; o[j + 2] = ch[2][i] * 255 + 0.5; o[j + 3] = 255; } return o; }
+// perceptually ordered colormap (viridis-like stops)
+const STOPS = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+function cmap(t) { t = Math.min(1, Math.max(0, t)) * (STOPS.length - 1); const k = Math.min(STOPS.length - 2, Math.floor(t)), f = t - k, a = STOPS[k], b = STOPS[k + 1]; return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]; }
+const post = (m, t) => self.postMessage(m, t || []);
+
+self.onmessage = async (ev) => {
+  const d = ev.data;
+  try {
+    if (d.type === 'demo') return post({ type: 'demo', files: await makeDemo(d) });
+    if (d.type === 'run') return await run(d.files, d.opts);
+  } catch (e) {
+    post({ type: 'error', message: (e && e.name === 'RangeError') ? 'Ran out of memory. Choose a smaller working size and try again.' : String(e && e.message || e) });
+  }
+};
+
+async function run(files, o) {
+  const n = files.length, t0 = performance.now();
+  const bm0 = await createImageBitmap(files[0]);
+  const W0 = bm0.width, H0 = bm0.height; bm0.close();
+  const sc = o.maxPixels > 0 ? Math.min(1, Math.sqrt(o.maxPixels / (W0 * H0))) : 1;
+  const W = Math.max(16, Math.round(W0 * sc)), H = Math.max(16, Math.round(H0 * sc));
+  const ps = Math.min(1, 1000 / Math.max(W, H)); // alignment proxy, about 1000 px wide
+  const pw = Math.max(16, Math.round(W * ps)), ph = Math.max(16, Math.round(H * ps));
+  // pass 1: small grayscale proxies for alignment
+  const grays = [];
+  for (let i = 0; i < n; i++) {
+    post({ type: 'progress', phase: 'Reading', i: i + 1, n, frac: 0.15 * (i + 1) / n });
+    grays.push(toGray(await bitmapPixels(files[i], pw, ph), pw * ph));
+  }
+  const ref = Math.floor((n - 1) / 2);
+  const al = Engine.alignStack(grays, pw, ph, o.align, ref, (k, m) => post({ type: 'progress', phase: 'Aligning', i: k, n: m, frac: 0.15 + 0.2 * k / Math.max(1, m) }));
+  const Ms = al.Ms.map(M => Engine.scaleMatrix(M, W / pw));
+  const motion = Ms.map(M => ({ scale: Math.hypot(M[0], M[3]), rot: Math.atan2(M[3], M[0]) * 180 / Math.PI, dx: M[0] * (W - 1) / 2 + M[1] * (H - 1) / 2 + M[2] - (W - 1) / 2, dy: M[3] * (W - 1) / 2 + M[4] * (H - 1) / 2 + M[5] - (H - 1) / 2 }));
+  post({ type: 'motion', motion });
+  const R = o.crop ? Engine.commonRect(Ms, W, H) : { x: 0, y: 0, w: W, h: H };
+  const shiftR = [1, 0, R.x, 0, 1, R.y, 0, 0, 1];
+  const F = new Engine.Fuser(R.w, R.h, n, { method: o.method, smooth: o.smooth * Math.max(1, Math.max(W, H) / 3000) });
+  let refRGBA = null;
+  for (let i = 0; i < n; i++) {
+    post({ type: 'progress', phase: 'Blending', i: i + 1, n, frac: 0.35 + 0.6 * i / n });
+    const px = await bitmapPixels(files[i], W, H);
+    let rgb = toPlanar(px, W * H);
+    const M = Engine.mul3(Ms[i], shiftR);
+    rgb = rgb.map(c => Engine.warp(c, W, H, M, R.w, R.h));
+    if (i === ref) refRGBA = toRGBA(rgb, R.w * R.h);
+    F.add(rgb, i);
+  }
+  post({ type: 'progress', phase: 'Finishing', i: n, n, frac: 0.97 });
+  const out = toRGBA(F.result(), R.w * R.h);
+  const m = R.w * R.h, dep = new Uint8ClampedArray(m * 4);
+  for (let i = 0, j = 0; i < m; i++, j += 4) { const c = cmap(n > 1 ? F.depth[i] / (n - 1) : 0); dep[j] = c[0]; dep[j + 1] = c[1]; dep[j + 2] = c[2]; dep[j + 3] = 255; }
+  post({ type: 'result', w: R.w, h: R.h, rgba: out, depth: dep, ref: refRGBA, refIndex: ref, srcW: W0, srcH: H0, workW: W, workH: H, ms: performance.now() - t0, motion }, [out.buffer, dep.buffer, refRGBA.buffer]);
+}
+
+// Synthetic demo: render a known all-in-focus target through a depth-dependent blur + focus breathing.
+async function makeDemo({ rgba, w, h, depth, n }) {
+  const ch = toPlanar(rgba, w * h);
+  const SIG = [0, 0.6, 1.2, 1.8, 2.6, 3.6, 4.8, 6.2];
+  const bank = ch.map(c => SIG.map(s => Engine.gaussBlur(c, w, h, s)));
+  const files = [], ref = Math.floor((n - 1) / 2);
+  for (let k = 0; k < n; k++) {
+    const f = k / (n - 1), out = [0, 1, 2].map(() => new Float32Array(w * h));
+    for (let i = 0; i < w * h; i++) {
+      const s = Math.min(SIG[SIG.length - 1], 9 * Math.abs(depth[i] - f));
+      let j = 0; while (j < SIG.length - 2 && SIG[j + 1] < s) j++;
+      const t = (s - SIG[j]) / (SIG[j + 1] - SIG[j]);
+      for (let c = 0; c < 3; c++) out[c][i] = bank[c][j][i] * (1 - t) + bank[c][j + 1][i] * t;
+    }
+    const dk = k - ref, s = 1 + 0.007 * dk, cx = (w - 1) / 2, cy = (h - 1) / 2;
+    const M = Engine.inv3([s, 0, cx - s * cx + 1.2 * dk, 0, s, cy - s * cy - 0.8 * dk, 0, 0, 1]);
+    const warped = out.map(c => Engine.warp(c, w, h, M));
+    const c = new OffscreenCanvas(w, h), ctx = c.getContext('2d');
+    ctx.putImageData(new ImageData(toRGBA(warped, w * h), w, h), 0, 0);
+    const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+    files.push(new File([blob], 'sample_slice_' + String(k + 1).padStart(2, '0') + '.jpg', { type: 'image/jpeg' }));
+  }
+  return files;
+}
+</script>
+
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const src = $('engine-src').textContent + '\n' + $('worker-src').textContent;
+  let worker = null;
+  function getWorker() {
+    if (!worker) { worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))); worker.onmessage = onMsg; worker.onerror = e => fail(e.message || 'The processing worker stopped.'); }
+    return worker;
+  }
+
+  let frames = []; // {file, url, isSample}
+  let result = null, view = 'result', zoomFull = false, busy = false, downloads = null;
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+  function addFiles(list, isSample) {
+    const imgs = [...list].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|avif|heic|bmp|gif)$/i.test(f.name));
+    if (!imgs.length) return;
+    if (frames.length && frames[0].isSample) clearFrames();
+    for (const f of imgs) frames.push({ file: f, url: URL.createObjectURL(f), isSample: !!isSample });
+    frames.sort((a, b) => collator.compare(a.file.name, b.file.name));
+    renderFrames();
+  }
+  function clearFrames() { frames.forEach(f => URL.revokeObjectURL(f.url)); frames = []; renderFrames(); }
+  function renderFrames(motion) {
+    const ol = $('frames'); ol.textContent = '';
+    frames.forEach((fr, i) => {
+      const li = document.createElement('li');
+      const ix = document.createElement('span'); ix.className = 'ix'; ix.textContent = i + 1;
+      const im = document.createElement('img'); im.src = fr.url; im.alt = ''; im.loading = 'lazy';
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = fr.file.name; nm.title = fr.file.name;
+      if (motion && motion[i]) {
+        const m = motion[i], mv = document.createElement('span'); mv.className = 'mv';
+        mv.textContent = `scale ${((m.scale - 1) * 100).toFixed(2)}% · shift ${m.dx.toFixed(1)}, ${m.dy.toFixed(1)} px`;
+        nm.appendChild(mv);
+      }
+      const rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '×'; rm.setAttribute('aria-label', 'Remove ' + fr.file.name);
+      rm.onclick = () => { URL.revokeObjectURL(fr.url); frames.splice(i, 1); renderFrames(); };
+      const dl = document.createElement('button'); dl.type = 'button'; dl.className = 'dl'; dl.textContent = '↓'; dl.title = 'Save this photo'; dl.setAttribute('aria-label', 'Save ' + fr.file.name);
+      dl.onclick = () => saveBlob(fr.file, fr.file.name);
+      li.append(ix, im, nm, dl, rm); ol.appendChild(li);
+    });
+    const n = frames.length;
+    $('frameCount').innerHTML = n ? `${n} photo${n > 1 ? 's' : ''}${frames[0].isSample ? ' <span class="sample">sample</span>' : ''}` : 'No photos yet';
+    $('goBtn').disabled = busy || n < 2;
+    $('goBtn').textContent = n >= 2 ? `Stack ${n} photos` : 'Add at least 2 photos';
+    updateMem();
+  }
+  async function updateMem() {
+    if (!frames.length) { $('memHint').innerHTML = '&nbsp;'; return; }
+    try {
+      const bm = await createImageBitmap(frames[0].file); const mp = bm.width * bm.height; const dim = `${bm.width}×${bm.height}`; bm.close();
+      const cap = +$('size').value, px = cap > 0 ? Math.min(mp, cap) : mp;
+      const bytes = px * 4 * ($('method').value === 'pyramid' ? 13 : 9);
+      $('memHint').textContent = `Photos are ${dim} (${(mp / 1e6).toFixed(1)} MP). Needs about ${bytes > 1e9 ? (bytes / 1e9).toFixed(1) + ' GB' : Math.round(bytes / 1e6) + ' MB'} of memory.`;
+    } catch { $('memHint').textContent = 'This browser cannot read that image format.'; }
+  }
+
+  // input
+  const drop = $('drop');
+  drop.onclick = () => $('file').click();
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } };
+  $('file').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+  ['dragenter', 'dragover'].forEach(t => document.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => document.addEventListener(t, e => { e.preventDefault(); if (t === 'drop' || e.target === document.documentElement) drop.classList.remove('over'); }));
+  document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files); });
+  $('clearBtn').onclick = clearFrames;
+  $('smooth').oninput = e => { $('smoothVal').textContent = e.target.value; };
+  $('size').onchange = updateMem; $('method').onchange = updateMem;
+
+  // run
+  $('goBtn').onclick = () => {
+    if (frames.length < 2 || busy) return;
+    busy = true; $('goBtn').disabled = true; setStatus('Starting…'); setBar(0.01);
+    getWorker().postMessage({ type: 'run', files: frames.map(f => f.file), opts: {
+      method: $('method').value, align: $('align').value, smooth: +$('smooth').value, maxPixels: +$('size').value, crop: $('crop').checked } });
+  };
+  function setStatus(t, err) { const s = $('status'); s.textContent = t; s.classList.toggle('err', !!err); }
+  function setBar(f) { $('bar').style.width = (100 * f).toFixed(1) + '%'; }
+  function fail(msg) { busy = false; setStatus(msg, true); setBar(0); renderFrames(); }
+
+  function onMsg(ev) {
+    const d = ev.data;
+    if (d.type === 'progress') { setStatus(`${d.phase} ${d.i}/${d.n}`); setBar(d.frac); }
+    else if (d.type === 'motion') renderFrames(d.motion);
+    else if (d.type === 'error') fail(d.message);
+    else if (d.type === 'demo') { addFiles(d.files, true); $('goBtn').click(); }
+    else if (d.type === 'result') {
+      busy = false; setBar(1); result = d;
+      setStatus(`Done in ${(d.ms / 1000).toFixed(1)} s`);
+      draw(); renderStats(); renderFrames(d.motion);
+      ['savePng', 'saveJpg', 'saveDepth', 'saveRef'].forEach(id => $(id).disabled = false);
+    }
+  }
+
+  function put(cv, rgba, w, h) { cv.width = w; cv.height = h; cv.getContext('2d').putImageData(new ImageData(rgba, w, h), 0, 0); }
+  function draw() {
+    if (!result) return;
+    const { w, h } = result;
+    put($('cvResult'), new Uint8ClampedArray(result.rgba), w, h);
+    put($('cvDepth'), new Uint8ClampedArray(result.depth), w, h);
+    put($('cvRef'), new Uint8ClampedArray(result.ref), w, h);
+    const top = $('cvCmpTop'); top.width = w; top.height = h; top.getContext('2d').drawImage($('cvResult'), 0, 0);
+    $('legendFar').textContent = `slice ${frames.length} · far`;
+    updateCmp(); setView(view);
+  }
+  function renderStats() {
+    const d = result, mo = d.motion;
+    const sc = mo.map(m => m.scale), br = (Math.max(...sc) - Math.min(...sc)) * 100;
+    const sh = Math.max(...mo.map(m => Math.hypot(m.dx, m.dy)));
+    const items = [
+      [`${d.w}×${d.h}`, `output px (from ${d.srcW}×${d.srcH})`],
+      [`${frames.length}`, 'focus slices'],
+      [`${br.toFixed(2)} %`, 'focus breathing (scale range)'],
+      [`${sh.toFixed(1)} px`, 'largest shift corrected'],
+    ];
+    $('stats').innerHTML = items.map(([v, l]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join('');
+  }
+  function setView(v) {
+    view = v;
+    document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
+    $('cvResult').hidden = v !== 'result'; $('cvDepth').hidden = v !== 'depth'; $('cmpBox').hidden = v !== 'compare';
+    $('cmpRange').hidden = v !== 'compare'; $('legend').hidden = v !== 'depth';
+  }
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setView(b.dataset.view));
+  function updateCmp() {
+    const p = +$('cmpRange').value;
+    $('cvCmpTop').style.clipPath = `inset(0 0 0 ${p}%)`;
+    $('cmpHandle').style.left = `calc(${p}% - 1px)`;
+  }
+  $('cmpRange').oninput = updateCmp;
+  $('zoomBtn').onclick = () => {
+    zoomFull = !zoomFull; const st = $('stage');
+    st.classList.toggle('fit', !zoomFull); st.classList.toggle('full', zoomFull);
+    $('zoomBtn').textContent = zoomFull ? 'Fit to view' : 'View 1:1';
+  };
+  $('cmpBox').addEventListener('pointerdown', e => {
+    const box = $('cmpBox'), move = ev => { const r = box.getBoundingClientRect(); $('cmpRange').value = Math.round(100 * Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width))); updateCmp(); };
+    move(e); box.setPointerCapture(e.pointerId); box.onpointermove = move; box.onpointerup = () => { box.onpointermove = null; };
+  });
+  $('ramp').style.background = 'linear-gradient(90deg, rgb(68,1,84), rgb(59,82,139), rgb(33,145,140), rgb(94,201,98), rgb(253,231,37))';
+
+  // saving
+  const baseName = () => frames.length && !frames[0].isSample ? frames[0].file.name.replace(/\.[^.]+$/, '') + '_stacked' : 'focus_stack_sample';
+  async function save(canvasId, name, type, q) {
+    const blob = await new Promise(r => $(canvasId).toBlob(r, type, q));
+    if (!blob) return setStatus('Could not encode the image.', true);
+    return saveBlob(blob, name);
+  }
+  async function saveBlob(blob, name) {
+    if (downloads) {
+      try { await downloads.save({ filename: name, data: blob }); setStatus('Saved ' + name); }
+      catch (e) { if (e && e.code !== 'declined') setStatus('Saving is not available here (' + (e.code || 'error') + ').', true); }
+    } else {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+  }
+  $('savePng').onclick = () => save('cvResult', baseName() + '.png', 'image/png');
+  $('saveJpg').onclick = () => save('cvResult', baseName() + '.jpg', 'image/jpeg', 0.95);
+  $('saveRef').onclick = () => {
+    const n = result ? result.refIndex + 1 : 0, f = frames[n - 1];
+    save('cvRef', (f ? f.file.name.replace(/\.[^.]+$/, '') : 'slice_' + n) + '_aligned.png', 'image/png');
+  };
+  $('saveDepth').onclick = () => save('cvDepth', baseName().replace(/_stacked$/, '') + '_depthmap.png', 'image/png');
+  if (window.claude && window.claude.use) window.claude.use('downloads').then(d => { downloads = d; }).catch(() => {});
+
+  // sample stack: draw an all-in-focus test target with a known depth layout, then defocus it in the worker
+  function makeSample() {
+    const w = 900, h = 600, c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    let seed = 7; const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+    g.fillStyle = '#e9e2d0'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 9000; i++) { g.fillStyle = `rgba(90,70,40,${0.05 + rnd() * 0.12})`; g.fillRect(rnd() * w, rnd() * h, 1 + rnd() * 2, 1 + rnd() * 2); }
+    // millimetre scale running into the distance
+    g.save(); g.translate(40, 430); g.rotate(-0.12);
+    g.fillStyle = '#f7f3e8'; g.fillRect(0, 0, 830, 70); g.strokeStyle = '#2b2b2b'; g.lineWidth = 1;
+    for (let mm = 0; mm <= 160; mm++) { const x = 10 + mm * 5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, mm % 10 === 0 ? 30 : mm % 5 === 0 ? 20 : 12); g.stroke(); }
+    g.fillStyle = '#1d1d1d'; g.font = '600 15px "IBM Plex Mono", monospace';
+    for (let cm = 0; cm <= 16; cm++) g.fillText(String(cm), 6 + cm * 50, 50);
+    g.restore();
+    // text block
+    g.fillStyle = '#222'; g.font = '700 30px Archivo, Arial, sans-serif'; g.fillText('FOCUS STACK TEST TARGET', 40, 70);
+    g.font = '15px "IBM Plex Sans", Arial, sans-serif';
+    ['Depth of field at 2:1 magnification is a fraction of a millimetre,', 'so each photo is sharp in only one thin plane. Stacking keeps', 'the sharpest plane at every pixel.'].forEach((t, i) => g.fillText(t, 40, 110 + i * 22));
+    // fine grid patch
+    g.strokeStyle = '#3a3a3a'; g.lineWidth = 1; for (let i = 0; i <= 30; i++) { g.beginPath(); g.moveTo(600 + i * 8, 40); g.lineTo(600 + i * 8, 280); g.stroke(); g.beginPath(); g.moveTo(600, 40 + i * 8); g.lineTo(840, 40 + i * 8); g.stroke(); }
+    // beads
+    const beads = [[190, 280, 70, '#c0392b'], [380, 300, 55, '#2471a3'], [520, 230, 40, '#d4ac0d']];
+    for (const [x, y, r, col] of beads) {
+      const gr = g.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.1, x, y, r);
+      gr.addColorStop(0, '#fff'); gr.addColorStop(0.25, col); gr.addColorStop(1, '#111'); g.fillStyle = gr;
+      g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+      g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1.2;
+      for (let k = 1; k < 5; k++) { g.beginPath(); g.arc(x, y, r * k / 5, 0, 7); g.stroke(); }
+    }
+    const depth = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let d = 0.92 - 0.85 * (y / h) * 0.6 - 0.35 * (x / w); // tilted table: bottom-left near, top-right far
+      for (const [bx, by, r] of beads) { const q = Math.hypot(x - bx, y - by) / r; if (q < 1) d = Math.min(d, d - 0.35 * Math.sqrt(1 - q * q)); }
+      depth[y * w + x] = 1 - Math.min(1, Math.max(0, d));
+    }
+    const rgba = g.getImageData(0, 0, w, h).data;
+    setStatus('Generating a sample stack…'); setBar(0.02);
+    getWorker().postMessage({ type: 'demo', rgba, w, h, depth, n: 9 }, [rgba.buffer, depth.buffer]);
+  }
+  renderFrames();
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(makeSample);
+})();
+</script>
+
+</body>
+</html>
