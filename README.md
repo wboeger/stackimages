@@ -1,4 +1,5 @@
 # stackimages
+Combine photomicrographs into a single image, keeping areas in focus.
 
 A browser app for **focus stacking**. It merges photos of one scene taken at different focus distances into a single image that is sharp from front to back. Everything runs in the browser, and no photos are uploaded.
 
