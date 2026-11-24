@@ -17,6 +17,7 @@ A browser app for **focus stacking**. It merges photos of one scene taken at dif
 - **Draw** tab for line drawings (camera-lucida style tracing) over the stacked result, the depth map or any single slice:
   - Switch the background at any time with the slice list, the ‹ › buttons, the *Focus* slider or the `[` `]` keys. Every slice is aligned and cropped exactly like the result, so the drawing stays registered. Slices are cached after the first visit.
   - Tools: freehand pen with adjustable steadiness (tremor smoothing), straight line (Shift snaps to 15°), eraser, delete whole stroke, pan. Width, colour, undo/redo, and a background fade to check the drawing on white.
+  - Pen pressure: with a stylus (Wacom, Apple Pencil, Surface Pen and similar), pressing harder draws a heavier line, from the *Lightest* share of the width up to the full width. Mouse and finger lines keep a constant width, and the *Pen pressure* box turns it off. Pressure lines are saved in the SVG as filled outlines, so the varying width survives in Inkscape or Illustrator.
   - Zoom with the wheel, pinch, or the buttons; pan with Space-drag, the middle button, two fingers, or the Pan tool. With a stylus, fingers pan and the stylus eraser end erases.
   - Save the drawing as a transparent PNG, as an SVG (vector paths for Inkscape or Illustrator), composited on the current background, or as an editable file to continue later. The scale bar can be added to the drawing.
 - A built-in synthetic test stack, so the app shows a working example as soon as it opens.

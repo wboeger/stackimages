@@ -271,6 +271,12 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
             <input type="range" id="penW" min="0.5" max="40" step="0.5" value="3">
             <span class="val" id="penWVal">3 px</span>
           </div>
+          <div class="grp" title="With a stylus, pressing harder draws a heavier line. Mouse and finger lines keep the full width.">
+            <span class="field check" style="margin:0 4px 0 0;display:inline-flex"><input type="checkbox" id="penP" checked><label for="penP">Pen pressure</label></span>
+            <label for="penMin">Lightest</label>
+            <input type="range" id="penMin" min="5" max="100" step="5" value="25" title="Line width at the lightest touch, as a share of the width">
+            <span class="val" id="penMinVal">25%</span>
+          </div>
           <div class="grp" role="group" aria-label="Ink colour" id="swatches">
             <button type="button" class="sw" data-c="#000000" style="background:#000000" aria-label="Black" aria-pressed="true"></button>
             <button type="button" class="sw" data-c="#ffffff" style="background:#ffffff" aria-label="White" aria-pressed="false"></button>
@@ -836,22 +842,78 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       for (let i = 1; i < n - 1; i++) d += `Q${r2(p[2 * i])} ${r2(p[2 * i + 1])} ${r2((p[2 * i] + p[2 * i + 2]) / 2)} ${r2((p[2 * i + 1] + p[2 * i + 3]) / 2)}`;
       return d + `L${r2(p[2 * n - 2])} ${r2(p[2 * n - 1])}`;
     }
+    // Pressure strokes carry a width per point (s.ws). They follow the same centre curve, with the width
+    // interpolated by the same quadratic weights, and are drawn as a filled outline: the envelope of
+    // circles swept along the curve. One outline serves the canvas (Path2D) and the SVG export.
+    function piece(s, i, out) { // samples [x, y, radius, ...] of piece i (1..n-1); piece n-1 is the final straight bit
+      const p = s.p, w = s.ws, n = p.length / 2;
+      let ax, ay, aw, cx, cy, cw, bx, by, bw;
+      if (i === 1) { ax = p[0]; ay = p[1]; aw = w[0]; }
+      else { ax = (p[2 * i - 2] + p[2 * i]) / 2; ay = (p[2 * i - 1] + p[2 * i + 1]) / 2; aw = (w[i - 1] + w[i]) / 2; }
+      if (i < n - 1) { cx = p[2 * i]; cy = p[2 * i + 1]; cw = w[i]; bx = (p[2 * i] + p[2 * i + 2]) / 2; by = (p[2 * i + 1] + p[2 * i + 3]) / 2; bw = (w[i] + w[i + 1]) / 2; }
+      else { bx = p[2 * i]; by = p[2 * i + 1]; bw = w[i]; cx = (ax + bx) / 2; cy = (ay + by) / 2; cw = (aw + bw) / 2; }
+      const len = Math.hypot(cx - ax, cy - ay) + Math.hypot(bx - cx, by - cy);
+      const m = Math.min(32, Math.max(1, Math.ceil(len / Math.max(0.25, Math.min(aw, bw, cw) * 0.375))));
+      if (!out.length) out.push(ax, ay, aw / 2);
+      for (let k = 1; k <= m; k++) {
+        const t = k / m, A = (1 - t) * (1 - t), B = 2 * t * (1 - t), C = t * t;
+        out.push(A * ax + B * cx + C * bx, A * ay + B * cy + C * by, (A * aw + B * cw + C * bw) / 2);
+      }
+      return out;
+    }
+    function outlineD(S) { // S = [x, y, r, ...] -> SVG path data: tangent polygon + round caps and joins
+      const m = S.length / 3, L = [], R = [], join = new Uint8Array(m);
+      join[0] = join[m - 1] = 1;
+      let pux = 0, puy = 0, have = false;
+      for (let j = 0; j + 1 < m; j++) {
+        const x1 = S[3 * j], y1 = S[3 * j + 1], q1 = S[3 * j + 2], x2 = S[3 * j + 3], y2 = S[3 * j + 4], q2 = S[3 * j + 5];
+        const dx = x2 - x1, dy = y2 - y1, d = Math.hypot(dx, dy);
+        if (d <= Math.abs(q1 - q2) + 1e-6) { join[j] = join[j + 1] = 1; have = false; continue; } // one circle holds the other
+        const ux = dx / d, uy = dy / d, sa = (q1 - q2) / d, ca = Math.sqrt(1 - sa * sa);
+        const lx = -ca * uy + sa * ux, ly = ca * ux + sa * uy, rx = ca * uy + sa * ux, ry = -ca * ux + sa * uy; // outer tangent directions
+        L.push(x1 + q1 * lx, y1 + q1 * ly, x2 + q2 * lx, y2 + q2 * ly); R.push(x1 + q1 * rx, y1 + q1 * ry, x2 + q2 * rx, y2 + q2 * ry);
+        if (!have || pux * ux + puy * uy < 0.985) join[j] = 1; // turns over ~10° get a round join
+        pux = ux; puy = uy; have = true;
+      }
+      const P = L.slice();
+      for (let k = R.length - 2; k >= 0; k -= 2) P.push(R[k], R[k + 1]);
+      let area = 0;
+      for (let k = 0; k < P.length; k += 2) { const k2 = (k + 2) % P.length; area += P[k] * P[k2 + 1] - P[k2] * P[k + 1]; }
+      const sw = area < 0 ? 0 : 1; // circles wind the same way as the polygon, so nonzero fill gives the union
+      let d = '';
+      if (P.length) { d = 'M'; for (let k = 0; k < P.length; k += 2) d += (k ? ' ' : '') + r2(P[k]) + ' ' + r2(P[k + 1]); d += 'Z'; }
+      for (let j = 0; j < m; j++) if (join[j]) {
+        const x = S[3 * j], y = S[3 * j + 1], q = r2(Math.max(S[3 * j + 2], 0.01));
+        d += `M${r2(x - q)} ${r2(y)}a${q} ${q} 0 1 ${sw} ${r2(2 * q)} 0a${q} ${q} 0 1 ${sw} ${r2(-2 * q)} 0Z`;
+      }
+      return d;
+    }
+    function strokeD(s) { // whole-stroke outline, cached on committed strokes (they never change)
+      if (s._d) return s._d;
+      const S = [], n = s.p.length / 2;
+      if (n === 1) S.push(s.p[0], s.p[1], s.ws[0] / 2); else for (let i = 1; i < n; i++) piece(s, i, S);
+      const d = outlineD(S); if (s !== (cur && cur.s)) Object.defineProperty(s, '_d', { value: d }); return d;
+    }
     function style(g, s) {
       g.globalCompositeOperation = s.t === 'erase' ? 'destination-out' : 'source-over';
       g.strokeStyle = g.fillStyle = s.t === 'erase' ? '#000' : s.c; g.lineWidth = s.w; g.lineCap = g.lineJoin = 'round';
     }
-    function dot(g, s, x, y) { style(g, s); g.beginPath(); g.arc(x, y, s.w / 2, 0, 2 * Math.PI); g.fill(); }
+    const rad = (s, i) => (s.ws ? s.ws[i] : s.w) / 2;
+    function dot(g, s, x, y) { style(g, s); g.beginPath(); g.arc(x, y, rad(s, 0), 0, 2 * Math.PI); g.fill(); }
     function paintFull(g, s) {
       if (s.p.length === 2) return dot(g, s, s.p[0], s.p[1]);
-      style(g, s); g.stroke(new Path2D(pathD(s.p)));
+      style(g, s);
+      if (s.ws) g.fill(new Path2D(strokeD(s))); else g.stroke(new Path2D(pathD(s.p)));
     }
     function paintPiece(s, i) { // the piece of the curve fixed once point i+1 exists
+      if (s.ws) { style(ictx, s); ictx.fill(new Path2D(outlineD(piece(s, i, [])))); return; }
       const p = s.p, x0 = i === 1 ? p[0] : (p[2 * i - 2] + p[2 * i]) / 2, y0 = i === 1 ? p[1] : (p[2 * i - 1] + p[2 * i + 1]) / 2;
       style(ictx, s); ictx.beginPath(); ictx.moveTo(x0, y0);
       ictx.quadraticCurveTo(p[2 * i], p[2 * i + 1], (p[2 * i] + p[2 * i + 2]) / 2, (p[2 * i + 1] + p[2 * i + 3]) / 2); ictx.stroke();
     }
     function paintEnd(s) {
       const p = s.p, n = p.length / 2; if (n < 2) return;
+      if (s.ws) return paintPiece(s, n - 1);
       const x0 = n === 2 ? p[0] : (p[2 * n - 4] + p[2 * n - 2]) / 2, y0 = n === 2 ? p[1] : (p[2 * n - 3] + p[2 * n - 1]) / 2;
       style(ictx, s); ictx.beginPath(); ictx.moveTo(x0, y0); ictx.lineTo(p[2 * n - 2], p[2 * n - 1]); ictx.stroke();
     }
@@ -961,6 +1023,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       }
       const s = { t: erasing ? 'erase' : 'pen', c: color, w: widths[erasing ? 'erase' : 'pen'], p: [x, y] };
       cur = { id: e.pointerId, kind: 'free', s, sx: x, sy: y };
+      // pen pressure: only a stylus reports real pressure (mice report 0.5 while pressed, fingers vary by device)
+      if (!erasing && e.pointerType === 'pen' && $('penP').checked) { cur.pr = e.pressure || 0; s.ws = [pw(cur.pr)]; }
       dot(ictx, s, x, y);
     }
     function snap(c) {
@@ -980,9 +1044,10 @@ async function makeDemo({ rgba, w, h, depth, n }) {
         if (cur.kind === 'line') { cur.x1 = rx; cur.y1 = ry; if (ev.shiftKey) snap(cur); continue; }
         if (cur.kind === 'cut') { cutAt(rx, ry); continue; }
         cur.raw = [rx, ry]; cur.sx += (rx - cur.sx) * (1 - k); cur.sy += (ry - cur.sy) * (1 - k);
+        if (cur.s.ws) cur.pr += (ev.pressure - cur.pr) * 0.5; // light smoothing; sensors are noisy
         const p = cur.s.p;
         if (Math.hypot(cur.sx - p[p.length - 2], cur.sy - p[p.length - 1]) < minStep) continue;
-        p.push(cur.sx, cur.sy);
+        p.push(cur.sx, cur.sy); if (cur.s.ws) cur.s.ws.push(pw(cur.pr));
         if (p.length >= 6) paintPiece(cur.s, p.length / 2 - 2);
       }
       if (cur.kind === 'line') linePrev();
@@ -992,9 +1057,9 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       return Math.hypot(px - ax - t * dx, py - ay - t * dy);
     }
     function hits(s, x, y, tol) {
-      const p = s.p, r = tol + s.w / 2;
-      if (p.length === 2) return Math.hypot(x - p[0], y - p[1]) <= r;
-      for (let i = 0; i + 3 < p.length; i += 2) if (segDist(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]) <= r) return true;
+      const p = s.p;
+      if (p.length === 2) return Math.hypot(x - p[0], y - p[1]) <= tol + rad(s, 0);
+      for (let i = 0; i + 3 < p.length; i += 2) if (segDist(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]) <= tol + Math.max(rad(s, i / 2), rad(s, i / 2 + 1))) return true;
       return false;
     }
     function cutAt(x, y) {
@@ -1006,7 +1071,10 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       if (c.kind === 'free') {
         // the steadiness filter trails the pointer; finish the stroke where the pointer was released
         const p = c.s.p;
-        if (c.raw && Math.hypot(c.raw[0] - p[p.length - 2], c.raw[1] - p[p.length - 1]) > 0.5) { p.push(c.raw[0], c.raw[1]); if (p.length >= 6) paintPiece(c.s, p.length / 2 - 2); }
+        if (c.raw && Math.hypot(c.raw[0] - p[p.length - 2], c.raw[1] - p[p.length - 1]) > 0.5) {
+          p.push(c.raw[0], c.raw[1]); if (c.s.ws) c.s.ws.push(pw(c.pr));
+          if (p.length >= 6) paintPiece(c.s, p.length / 2 - 2);
+        }
         paintEnd(c.s); const prev = strokes; strokes = strokes.concat([c.s]); commit(prev); }
       else if (c.kind === 'line') {
         prevLine.setAttribute('visibility', 'hidden');
@@ -1089,10 +1157,20 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     function showW() {
       const k = wKey(), el = $('penW');
       if (+el.max < widths[k]) el.max = Math.ceil(widths[k]);
-      el.value = widths[k]; $('penWVal').textContent = `${widths[k]} px`;
+      el.value = widths[k]; $('penWVal').textContent = `${widths[k]} px`; showMin();
       document.querySelector('label[for=penW]').textContent = k === 'erase' ? 'Eraser size' : 'Width';
     }
-    $('penW').oninput = e => { widthTouched = true; widths[wKey()] = +e.target.value; $('penWVal').textContent = `${widths[wKey()]} px`; cursorAt(); };
+    $('penW').oninput = e => { widthTouched = true; widths[wKey()] = +e.target.value; $('penWVal').textContent = `${widths[wKey()]} px`; showMin(); cursorAt(); };
+    const pw = pr => widths.pen * (1 - (1 - +$('penMin').value / 100) * (1 - clamp(pr, 0, 1))); // lightest share .. full width
+    function showMin() {
+      const on = $('penP').checked, v = +$('penMin').value; $('penMin').disabled = !on;
+      $('penMinVal').textContent = on ? `${v}% · ${r2(widths.pen * v / 100)} px` : 'off';
+    }
+    $('penP').onchange = () => { store.set('fs.penP', $('penP').checked ? '1' : '0'); showMin(); };
+    $('penMin').oninput = () => { store.set('fs.penMin', $('penMin').value); showMin(); };
+    if (store.get('fs.penP') === '0') $('penP').checked = false;
+    if (+store.get('fs.penMin') >= 5) $('penMin').value = store.get('fs.penMin');
+    showMin();
     $('steady').oninput = e => { $('steadyVal').textContent = (+e.target.value).toFixed(2); };
     $('undoBtn').onclick = doUndo; $('redoBtn').onclick = doRedo;
     $('inkClear').onclick = () => { if (!strokes.length) return; const prev = strokes; strokes = []; render(); commit(prev); };
@@ -1149,7 +1227,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
     function toSVG() {
       let body = '', defs = '', m = 0;
-      const el = (s, c) => s.p.length === 2 ? `<circle cx="${r2(s.p[0])}" cy="${r2(s.p[1])}" r="${r2(s.w / 2)}" fill="${c}"/>`
+      const el = (s, c) => s.p.length === 2 ? `<circle cx="${r2(s.p[0])}" cy="${r2(s.p[1])}" r="${r2(rad(s, 0))}" fill="${c}"/>`
+        : s.ws ? `<path d="${strokeD(s)}" fill="${c}"/>` // pressure stroke: filled outline keeps the varying width
         : `<path d="${pathD(s.p)}" fill="none" stroke="${c}" stroke-width="${r2(s.w)}"/>`;
       for (const s of strokes) {
         if (s.t === 'pen') { body += '\n  ' + el(s, s.c); continue; }
@@ -1170,7 +1249,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     $('inkSave').onclick = async () => {
       const u = parseFloat($('umpp').value);
       const doc = { format: 'focus-stacker-drawing', version: 1, width: W, height: H, umPerPixel: u > 0 ? u * result.srcW / result.workW : null,
-        slices: result.names, strokes: strokes.map(s => ({ t: s.t, c: s.c, w: s.w, p: s.p.map(r2) })) };
+        slices: result.names, strokes: strokes.map(s => Object.assign({ t: s.t, c: s.c, w: s.w, p: s.p.map(r2) }, s.ws ? { ws: s.ws.map(r2) } : {})) };
       await saveBlob(new Blob([JSON.stringify(doc)], { type: 'application/json' }), drawName() + '.json'); dirty = false;
     };
     $('inkOpen').onclick = () => $('inkFile').click();
@@ -1183,7 +1262,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
         const sx = W / doc.width, sy = H / doc.height, sameShape = Math.abs(sx / sy - 1) < 0.01;
         const f2 = sameShape ? sx : 1;
         const loaded = doc.strokes.filter(s => s && Array.isArray(s.p) && s.p.length >= 2 && s.p.length % 2 === 0 && s.p.every(Number.isFinite))
-          .map(s => ({ t: s.t === 'erase' ? 'erase' : 'pen', c: /^#[0-9a-f]{6}$/i.test(s.c) ? s.c : '#000000', w: Math.max(0.1, +s.w || 1) * f2, p: s.p.map(v => v * f2) }));
+          .map(s => Object.assign({ t: s.t === 'erase' ? 'erase' : 'pen', c: /^#[0-9a-f]{6}$/i.test(s.c) ? s.c : '#000000', w: Math.max(0.1, +s.w || 1) * f2, p: s.p.map(v => v * f2) },
+            Array.isArray(s.ws) && s.ws.length === s.p.length / 2 && s.ws.every(v => Number.isFinite(v) && v >= 0) ? { ws: s.ws.map(v => Math.max(0.05, v) * f2) } : {}));
         const prev = strokes; strokes = loaded; render(); commit(prev); dirty = false;
         warn(sameShape ? (Math.abs(sx - 1) > 1e-6 ? `Drawing was made at ${doc.width}×${doc.height} px and has been scaled to ${W}×${H}.` : '')
           : `Drawing was made at ${doc.width}×${doc.height} px, which does not match this result (${W}×${H}); it may not line up.`);
