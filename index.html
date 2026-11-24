@@ -63,6 +63,7 @@ label { font-size: 0.85rem; font-weight: 500 }
 select, input[type=range] { width: 100%; font: inherit }
 select { padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink) }
 input[type=range] { accent-color: var(--accent) }
+input[type=number] { width: 100%; font: inherit; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink) }
 .check { flex-direction: row; align-items: center; gap: 8px }
 .check input { accent-color: var(--accent); width: 16px; height: 16px }
 .go { width: 100%; padding: 11px; border: 0; border-radius: var(--r); background: var(--accent); color: var(--accent-ink); font: 700 1rem var(--f-display); cursor: pointer; letter-spacing: .01em }
@@ -130,6 +131,15 @@ details p, details li { color: var(--muted); max-width: 70ch }
       <section class="panel" aria-labelledby="h-set">
         <h2 id="h-set">Settings</h2>
         <div class="field">
+          <label for="preset">Setup</label>
+          <select id="preset">
+            <option value="macro" selected>Camera and lens (macro)</option>
+            <option value="micro">Microscope (fixed framing)</option>
+            <option value="custom">Custom</option>
+          </select>
+          <span class="hint" id="presetHint">Aligns every photo, since refocusing a lens shifts and rescales the image.</span>
+        </div>
+        <div class="field">
           <label for="method">Blending method</label>
           <select id="method">
             <option value="pyramid" selected>Laplacian pyramid (best detail, fewest halos)</option>
@@ -164,6 +174,20 @@ details p, details li { color: var(--muted); max-width: 70ch }
           <input type="checkbox" id="crop" checked>
           <label for="crop">Crop to the area every photo covers</label>
         </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-scale">
+        <h2 id="h-scale">Scale bar</h2>
+        <div class="field">
+          <label for="umpp">Micrometres per pixel (original photo)</label>
+          <input type="number" id="umpp" min="0" step="any" inputmode="decimal" placeholder="e.g. 0.65">
+          <span class="hint">Photograph a stage micrometer with the same objective and camera, then divide its length in µm by its length in pixels. Leave empty for no scale bar.</span>
+        </div>
+        <div class="field check">
+          <input type="checkbox" id="barOn" checked>
+          <label for="barOn">Draw the scale bar on the result (included when saving)</label>
+        </div>
+        <span class="hint" id="barInfo">&nbsp;</span>
       </section>
 
       <div>
@@ -654,7 +678,43 @@ class Fuser {
   }
 }
 
-const Engine = { boxBlur, smoothFast, gaussBlur, gaussKernel, pyrDown, pyrUp, luminance, focusEnergy, warp, mul3, inv3, estimateMotion, alignStack, scaleMatrix, commonRect, Fuser, I3 };
+
+/* ---------- strips (multi-core) ----------
+ * The output is cut into horizontal strips that overlap by `ov` rows; each strip is
+ * fused independently (in its own worker) and the strips are cross-faded in the overlaps. */
+function planStrips(h, k, ov) {
+  k = Math.max(1, Math.min(k, Math.floor(h / Math.max(32, ov)) || 1));
+  const core = Math.ceil(h / k), out = [];
+  for (let i = 0; i < k; i++) {
+    const c0 = i * core, c1 = Math.min(h, (i + 1) * core);
+    if (c0 >= c1) break;
+    out.push({ c0, c1, y0: Math.max(0, c0 - ov), y1: Math.min(h, c1 + ov) });
+  }
+  return out;
+}
+// parts: [{ s: strip, rgb: [r,g,b] (w*(y1-y0) each), depth: Uint16Array }] -> { rgb, depth }
+function assembleStrips(parts, w, h) {
+  const rgb = [new Float32Array(w * h), new Float32Array(w * h), new Float32Array(w * h)];
+  const wsum = new Float32Array(h), depth = new Uint16Array(w * h);
+  for (const p of parts) {
+    const { c0, c1, y0, y1 } = p.s, ovTop = c0 - y0, ovBot = y1 - c1;
+    for (let y = y0; y < y1; y++) {
+      let wt = 1;
+      if (y < c0) wt = (y - y0 + 0.5) / (ovTop + 0.5);
+      else if (y >= c1) wt = (y1 - y - 0.5) / (ovBot + 0.5);
+      wt = wt * wt * (3 - 2 * wt); // smoothstep cross-fade
+      if (wt <= 0) continue;
+      wsum[y] += wt;
+      const so = (y - y0) * w, o = y * w;
+      for (let c = 0; c < 3; c++) { const d = rgb[c], s = p.rgb[c]; for (let x = 0; x < w; x++) d[o + x] += wt * s[so + x]; }
+      if (y >= c0 && y < c1) depth.set(p.depth.subarray(so, so + w), o);
+    }
+  }
+  for (let y = 0; y < h; y++) { const iw = 1 / wsum[y], o = y * w; for (let c = 0; c < 3; c++) { const d = rgb[c]; for (let x = 0; x < w; x++) d[o + x] *= iw; } }
+  return { rgb, depth };
+}
+
+const Engine = { planStrips, assembleStrips, boxBlur, smoothFast, gaussBlur, gaussKernel, pyrDown, pyrUp, luminance, focusEnergy, warp, mul3, inv3, estimateMotion, alignStack, scaleMatrix, commonRect, Fuser, I3 };
 if (typeof module !== 'undefined' && module.exports) module.exports = Engine;
 
 </script>
@@ -681,10 +741,12 @@ self.onmessage = async (ev) => {
   const d = ev.data;
   try {
     if (d.type === 'demo') return post({ type: 'demo', files: await makeDemo(d) });
-    if (d.type === 'run') return await run(d.files, d.opts);
+    if (d.type === 'prepare') return await prepare(d.files, d.opts, d.run);
+    if (d.type === 'strip') return await fuseStrip(d);
+    if (d.type === 'assemble') return assemble(d);
     if (d.type === 'slice') return await sendSlice(d.k);
   } catch (e) {
-    post({ type: 'error', message: (e && e.name === 'RangeError') ? 'Ran out of memory. Choose a smaller working size and try again.' : String(e && e.message || e) });
+    post({ type: 'error', run: d.run, message: (e && e.name === 'RangeError') ? 'Ran out of memory. Choose a smaller working size and try again.' : String(e && e.message || e) });
   }
 };
 
@@ -696,44 +758,78 @@ async function sendSlice(k) {
   const rgba = toRGBA(rgb, R.w * R.h);
   post({ type: 'slice', k, rgba, w: R.w, h: R.h }, [rgba.buffer]);
 }
-async function run(files, o) {
-  const n = files.length, t0 = performance.now();
+
+// Step 1 (one worker): read small proxies, align, decide the output rectangle.
+async function prepare(files, o, run) {
+  const n = files.length;
   const bm0 = await createImageBitmap(files[0]);
   const W0 = bm0.width, H0 = bm0.height; bm0.close();
   const sc = o.maxPixels > 0 ? Math.min(1, Math.sqrt(o.maxPixels / (W0 * H0))) : 1;
   const W = Math.max(16, Math.round(W0 * sc)), H = Math.max(16, Math.round(H0 * sc));
   const ps = Math.min(1, 1000 / Math.max(W, H)); // alignment proxy, about 1000 px wide
   const pw = Math.max(16, Math.round(W * ps)), ph = Math.max(16, Math.round(H * ps));
-  // pass 1: small grayscale proxies for alignment
-  const grays = [];
-  for (let i = 0; i < n; i++) {
-    post({ type: 'progress', phase: 'Reading', i: i + 1, n, frac: 0.15 * (i + 1) / n });
-    grays.push(toGray(await bitmapPixels(files[i], pw, ph), pw * ph));
-  }
   const ref = Math.floor((n - 1) / 2);
-  const al = Engine.alignStack(grays, pw, ph, o.align, ref, (k, m) => post({ type: 'progress', phase: 'Aligning', i: k, n: m, frac: 0.15 + 0.2 * k / Math.max(1, m) }));
-  const Ms = al.Ms.map(M => Engine.scaleMatrix(M, W / pw));
+  let Ms;
+  if (o.align === 'none') Ms = files.map(() => Engine.I3());
+  else {
+    const grays = [];
+    for (let i = 0; i < n; i++) {
+      post({ type: 'progress', run, phase: 'Reading', i: i + 1, n, frac: 0.15 * (i + 1) / n });
+      grays.push(toGray(await bitmapPixels(files[i], pw, ph), pw * ph));
+    }
+    const al = Engine.alignStack(grays, pw, ph, o.align, ref, (k, m) => post({ type: 'progress', run, phase: 'Aligning', i: k, n: m, frac: 0.15 + 0.2 * k / Math.max(1, m) }));
+    Ms = al.Ms.map(M => Engine.scaleMatrix(M, W / pw));
+  }
   const motion = Ms.map(M => ({ scale: Math.hypot(M[0], M[3]), rot: Math.atan2(M[3], M[0]) * 180 / Math.PI, dx: M[0] * (W - 1) / 2 + M[1] * (H - 1) / 2 + M[2] - (W - 1) / 2, dy: M[3] * (W - 1) / 2 + M[4] * (H - 1) / 2 + M[5] - (H - 1) / 2 }));
-  post({ type: 'motion', motion });
   const R = o.crop ? Engine.commonRect(Ms, W, H) : { x: 0, y: 0, w: W, h: H };
   const shiftR = [1, 0, R.x, 0, 1, R.y, 0, 0, 1];
-  const F = new Engine.Fuser(R.w, R.h, n, { method: o.method, smooth: o.smooth * Math.max(1, Math.max(W, H) / 3000) });
-  let refRGBA = null;
   last = { files, Ms, W, H, R, shiftR };
-  for (let i = 0; i < n; i++) {
-    post({ type: 'progress', phase: 'Blending', i: i + 1, n, frac: 0.35 + 0.6 * i / n });
-    const px = await bitmapPixels(files[i], W, H);
-    let rgb = toPlanar(px, W * H);
-    const M = Engine.mul3(Ms[i], shiftR);
-    rgb = rgb.map(c => Engine.warp(c, W, H, M, R.w, R.h));
-    if (i === ref) refRGBA = toRGBA(rgb, R.w * R.h);
+  // split the output into overlapping strips, one per core (leave a core for the page; fewer for huge images to bound memory)
+  const hc = o.hc || 4, px = R.w * R.h;
+  const cores = Math.max(1, Math.min(hc > 2 ? hc - 1 : hc, px > 30e6 ? 3 : px > 12e6 ? 4 : 6));
+  const smoothPx = o.smooth * Math.max(1, Math.max(W, H) / 3000);
+  const strips = Engine.planStrips(R.h, cores, Math.max(64, Math.ceil(6 * smoothPx)));
+  post({ type: 'plan', run, Ms, W, H, W0, H0, R, ref, motion, strips, smoothPx });
+}
+
+// Step 2 (each worker): fuse one horizontal strip of the output from all slices.
+async function fuseStrip({ run, files, Ms, W, H, W0, H0, R, s, ref, opts }) {
+  const sh = s.y1 - s.y0, fx = W0 / W, fy = H0 / H;
+  const F = new Engine.Fuser(R.w, sh, files.length, { method: opts.method, smooth: opts.smoothPx });
+  let refStrip = null;
+  for (let i = 0; i < files.length; i++) {
+    // output strip px -> working-image px
+    const M = Engine.mul3(Ms[i], [1, 0, R.x, 0, 1, R.y + s.y0, 0, 0, 1]);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of [[0, 0], [R.w - 1, 0], [0, sh - 1], [R.w - 1, sh - 1]]) {
+      const X = M[0] * x + M[1] * y + M[2], Y = M[3] * x + M[4] * y + M[5];
+      x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+    }
+    const sx = Math.max(0, Math.floor(x0) - 2), sy = Math.max(0, Math.floor(y0) - 2);
+    const ex = Math.min(W - 1, Math.ceil(x1) + 2), ey = Math.min(H - 1, Math.ceil(y1) + 2);
+    const sw = Math.max(1, ex - sx + 1), shh = Math.max(1, ey - sy + 1);
+    const bm = await createImageBitmap(files[i]);
+    const c = new OffscreenCanvas(sw, shh), ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bm, sx * fx, sy * fy, sw * fx, shh * fy, 0, 0, sw, shh); bm.close();
+    const Ml = Engine.mul3([1, 0, -sx, 0, 1, -sy, 0, 0, 1], M);
+    const rgb = toPlanar(ctx.getImageData(0, 0, sw, shh).data, sw * shh).map(ch => Engine.warp(ch, sw, shh, Ml, R.w, sh));
+    if (i === ref) refStrip = rgb;
     F.add(rgb, i);
+    post({ type: 'stripProgress', run });
   }
-  post({ type: 'progress', phase: 'Finishing', i: n, n, frac: 0.97 });
-  const out = toRGBA(F.result(), R.w * R.h);
-  const m = R.w * R.h, dep = new Uint8ClampedArray(m * 4);
-  for (let i = 0, j = 0; i < m; i++, j += 4) { const c = cmap(n > 1 ? F.depth[i] / (n - 1) : 0); dep[j] = c[0]; dep[j + 1] = c[1]; dep[j + 2] = c[2]; dep[j + 3] = 255; }
-  post({ type: 'result', w: R.w, h: R.h, rgba: out, depth: dep, ref: refRGBA, refIndex: ref, srcW: W0, srcH: H0, workW: W, workH: H, ms: performance.now() - t0, motion }, [out.buffer, dep.buffer, refRGBA.buffer]);
+  const out = F.result();
+  const buf = [...out.map(a => a.buffer), F.depth.buffer, ...refStrip.map(a => a.buffer)];
+  post({ type: 'stripDone', run, s, rgb: out, depth: F.depth, ref: refStrip }, buf);
+}
+
+// Step 3 (one worker): cross-fade strips and build display images.
+function assemble({ run, parts, R, n, refIndex, W0, H0, W, H, t0, motion }) {
+  const A = Engine.assembleStrips(parts, R.w, R.h);
+  const B = Engine.assembleStrips(parts.map(p => ({ s: p.s, rgb: p.ref, depth: p.depth })), R.w, R.h);
+  const m = R.w * R.h, out = toRGBA(A.rgb, m), refRGBA = toRGBA(B.rgb, m), dep = new Uint8ClampedArray(m * 4);
+  for (let i = 0, j = 0; i < m; i++, j += 4) { const c = cmap(n > 1 ? A.depth[i] / (n - 1) : 0); dep[j] = c[0]; dep[j + 1] = c[1]; dep[j + 2] = c[2]; dep[j + 3] = 255; }
+  post({ type: 'result', run, w: R.w, h: R.h, rgba: out, depth: dep, ref: refRGBA, refIndex, srcW: W0, srcH: H0, workW: W, workH: H, ms: performance.now() - t0, motion }, [out.buffer, dep.buffer, refRGBA.buffer]);
 }
 
 // Synthetic demo: render a known all-in-focus target through a depth-dependent blur + focus breathing.
@@ -767,11 +863,12 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   'use strict';
   const $ = id => document.getElementById(id);
   const src = $('engine-src').textContent + '\n' + $('worker-src').textContent;
-  let worker = null;
-  function getWorker() {
-    if (!worker) { worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))); worker.onmessage = onMsg; worker.onerror = e => fail(e.message || 'The processing worker stopped.'); }
-    return worker;
-  }
+  const workerURL = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  const pool = [];
+  function spawn() { const w = new Worker(workerURL); w.onmessage = onMsg; w.onerror = e => fail(e.message || 'A processing worker stopped.'); return w; }
+  function getWorker() { if (!pool.length) pool.push(spawn()); return pool[0]; }
+  function getPool(k) { while (pool.length < k) pool.push(spawn()); return pool.slice(0, k); }
+  let job = null, runId = 0;
 
   let frames = []; // {file, url, isSample}
   let stackNames = [];
@@ -830,26 +927,91 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   ['dragleave', 'drop'].forEach(t => document.addEventListener(t, e => { e.preventDefault(); if (t === 'drop' || e.target === document.documentElement) drop.classList.remove('over'); }));
   document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files); });
   $('clearBtn').onclick = clearFrames;
-  $('smooth').oninput = e => { $('smoothVal').textContent = e.target.value; };
-  $('size').onchange = updateMem; $('method').onchange = updateMem;
+  $('smooth').oninput = e => { $('smoothVal').textContent = e.target.value; markCustom(); };
+  $('size').onchange = updateMem; $('method').onchange = () => { updateMem(); markCustom(); };
+  $('align').onchange = markCustom;
+
+  // setup presets
+  const PRESETS = {
+    macro: { align: 'similarity', smooth: 3, method: 'pyramid', hint: 'Aligns every photo, since refocusing a lens shifts and rescales the image.' },
+    micro: { align: 'none', smooth: 2, method: 'pyramid', hint: 'No alignment (the stage moves, the framing does not), finer sharpness smoothing for small structures. Choose shift-only alignment if the stage drifts sideways.' },
+  };
+  let applyingPreset = false;
+  function markCustom() { if (applyingPreset) return; $('preset').value = 'custom'; $('presetHint').textContent = 'Your own combination of the settings below.'; }
+  $('preset').onchange = () => {
+    const pr = PRESETS[$('preset').value]; if (!pr) return;
+    applyingPreset = true;
+    $('align').value = pr.align; $('smooth').value = pr.smooth; $('smoothVal').textContent = pr.smooth; $('method').value = pr.method;
+    applyingPreset = false; $('presetHint').textContent = pr.hint; updateMem();
+  };
+
+  // scale bar
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+  { const v = store.get('fs.umpp'); if (v) $('umpp').value = v; if (store.get('fs.barOn') === '0') $('barOn').checked = false; }
+  $('umpp').oninput = () => { store.set('fs.umpp', $('umpp').value); redrawResult(); };
+  $('barOn').onchange = () => { store.set('fs.barOn', $('barOn').checked ? '1' : '0'); redrawResult(); };
+  function niceLength(maxUm) { const p = 10 ** Math.floor(Math.log10(maxUm)); for (const m of [5, 2, 1]) if (m * p <= maxUm) return m * p; return p; }
+  function fmtUm(um) { return um >= 1000 ? `${+(um / 1000).toPrecision(3)} mm` : `${+um.toPrecision(3)} µm`; }
+  function drawScaleBar(cv) {
+    const u = parseFloat($('umpp').value);
+    if (!result || !(u > 0)) { $('barInfo').innerHTML = '&nbsp;'; return; }
+    const eff = u * result.srcW / result.workW; // µm per output pixel
+    const len = niceLength(0.2 * result.w * eff), px = len / eff;
+    $('barInfo').textContent = `Result: ${fmtUm(eff)} per pixel, field of view ${fmtUm(result.w * eff)} × ${fmtUm(result.h * eff)}. Bar = ${fmtUm(len)}.`;
+    if (!$('barOn').checked) return;
+    const g = cv.getContext('2d'), s = Math.max(result.w, result.h);
+    const th = Math.max(4, Math.round(s * 0.006)), fs = Math.max(14, Math.round(s * 0.022)), m = Math.round(s * 0.03);
+    const x1 = result.w - m, x0 = x1 - px, y = result.h - m;
+    g.save();
+    g.font = `600 ${fs}px "IBM Plex Sans", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'bottom';
+    g.lineJoin = 'round'; g.lineWidth = Math.max(3, fs / 5); g.strokeStyle = 'rgba(0,0,0,.75)';
+    g.strokeRect(x0, y - th, px, th); g.strokeText(fmtUm(len), (x0 + x1) / 2, y - th - fs * 0.25);
+    g.fillStyle = '#fff'; g.fillRect(x0, y - th, px, th); g.fillText(fmtUm(len), (x0 + x1) / 2, y - th - fs * 0.25);
+    g.restore();
+  }
+  function redrawResult() {
+    if (!result) return;
+    put($('cvResult'), new Uint8ClampedArray(result.rgba), result.w, result.h);
+    drawScaleBar($('cvResult'));
+    const top = $('cvCmpTop'); top.width = result.w; top.height = result.h; top.getContext('2d').drawImage($('cvResult'), 0, 0);
+  }
 
   // run
   $('goBtn').onclick = () => {
     if (frames.length < 2 || busy) return;
     busy = true; $('goBtn').disabled = true; setStatus('Starting…'); setBar(0.01);
     stackNames = frames.map(f => f.file.name);
-    getWorker().postMessage({ type: 'run', files: frames.map(f => f.file), opts: {
-      method: $('method').value, align: $('align').value, smooth: +$('smooth').value, maxPixels: +$('size').value, crop: $('crop').checked } });
+    const opts = { method: $('method').value, align: $('align').value, smooth: +$('smooth').value, maxPixels: +$('size').value, crop: $('crop').checked, hc: navigator.hardwareConcurrency || 4 };
+    job = { run: ++runId, files: frames.map(f => f.file), opts, t0: performance.now() };
+    getWorker().postMessage({ type: 'prepare', run: job.run, files: job.files, opts });
   };
+  function startStrips(d) {
+    const { W, H, R, strips, smoothPx } = d, o = job.opts;
+    Object.assign(job, { plan: d, strips, parts: [], done: 0, total: strips.length * job.files.length });
+    setStatus(`Blending on ${strips.length} core${strips.length > 1 ? 's' : ''}…`);
+    getPool(strips.length).forEach((w, i) => w.postMessage({ type: 'strip', run: job.run, files: job.files, Ms: d.Ms, W, H, W0: d.W0, H0: d.H0, R, s: strips[i], ref: d.ref, opts: { method: o.method, smoothPx } }));
+  }
   function setStatus(t, err) { const s = $('status'); s.textContent = t; s.classList.toggle('err', !!err); }
   function setBar(f) { $('bar').style.width = (100 * f).toFixed(1) + '%'; }
   function fail(msg) { busy = false; setStatus(msg, true); setBar(0); renderFrames(); }
 
   function onMsg(ev) {
     const d = ev.data;
+    if (d.run !== undefined && (!job || d.run !== job.run)) return; // stale message from an earlier run
     if (d.type === 'progress') { setStatus(`${d.phase} ${d.i}/${d.n}`); setBar(d.frac); }
-    else if (d.type === 'motion') renderFrames(d.motion);
-    else if (d.type === 'error') fail(d.message);
+    else if (d.type === 'plan') { renderFrames(d.motion); startStrips(d); }
+    else if (d.type === 'stripProgress') { job.done++; setStatus(`Blending ${Math.min(job.files.length, Math.ceil(job.done / job.strips.length))}/${job.files.length} · ${job.strips.length} core${job.strips.length > 1 ? 's' : ''}`); setBar(0.35 + 0.6 * job.done / job.total); }
+    else if (d.type === 'stripDone') {
+      job.parts.push({ s: d.s, rgb: d.rgb, depth: d.depth, ref: d.ref });
+      if (job.parts.length === job.strips.length) {
+        setStatus('Finishing…'); setBar(0.97);
+        const p = job.plan, parts = job.parts, buf = [];
+        parts.forEach(q => { q.rgb.forEach(a => buf.push(a.buffer)); q.ref.forEach(a => buf.push(a.buffer)); buf.push(q.depth.buffer); });
+        getWorker().postMessage({ type: 'assemble', run: job.run, parts, R: p.R, n: job.files.length, refIndex: p.ref, W0: p.W0, H0: p.H0, W: p.W, H: p.H, t0: 0, motion: p.motion }, buf);
+        job.parts = [];
+      }
+    }
+    else if (d.type === 'error') { job = null; fail(d.message); }
     else if (d.type === 'demo') { addFiles(d.files, true); $('goBtn').click(); }
     else if (d.type === 'slice') {
       if (!result || d.k !== +$('cmpSel').value) return;
@@ -859,7 +1021,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     else if (d.type === 'result') {
       busy = false; setBar(1); result = d; result.names = stackNames; result.cmpIndex = d.refIndex;
       fillCmpSel();
-      setStatus(`Done in ${(d.ms / 1000).toFixed(1)} s`);
+      const cores = job ? job.strips.length : 1;
+      setStatus(`Done in ${((performance.now() - (job ? job.t0 : 0)) / 1000).toFixed(1)} s on ${cores} core${cores > 1 ? 's' : ''}`);
       draw(); renderStats(); renderFrames(d.motion);
       ['savePng', 'saveJpg', 'saveDepth', 'saveRef'].forEach(id => $(id).disabled = false);
     }
@@ -870,6 +1033,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     if (!result) return;
     const { w, h } = result;
     put($('cvResult'), new Uint8ClampedArray(result.rgba), w, h);
+    drawScaleBar($('cvResult'));
     put($('cvDepth'), new Uint8ClampedArray(result.depth), w, h);
     put($('cvRef'), new Uint8ClampedArray(result.ref), w, h);
     const top = $('cvCmpTop'); top.width = w; top.height = h; top.getContext('2d').drawImage($('cvResult'), 0, 0);

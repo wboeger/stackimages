@@ -429,5 +429,41 @@ class Fuser {
   }
 }
 
-const Engine = { boxBlur, smoothFast, gaussBlur, gaussKernel, pyrDown, pyrUp, luminance, focusEnergy, warp, mul3, inv3, estimateMotion, alignStack, scaleMatrix, commonRect, Fuser, I3 };
+
+/* ---------- strips (multi-core) ----------
+ * The output is cut into horizontal strips that overlap by `ov` rows; each strip is
+ * fused independently (in its own worker) and the strips are cross-faded in the overlaps. */
+function planStrips(h, k, ov) {
+  k = Math.max(1, Math.min(k, Math.floor(h / Math.max(32, ov)) || 1));
+  const core = Math.ceil(h / k), out = [];
+  for (let i = 0; i < k; i++) {
+    const c0 = i * core, c1 = Math.min(h, (i + 1) * core);
+    if (c0 >= c1) break;
+    out.push({ c0, c1, y0: Math.max(0, c0 - ov), y1: Math.min(h, c1 + ov) });
+  }
+  return out;
+}
+// parts: [{ s: strip, rgb: [r,g,b] (w*(y1-y0) each), depth: Uint16Array }] -> { rgb, depth }
+function assembleStrips(parts, w, h) {
+  const rgb = [new Float32Array(w * h), new Float32Array(w * h), new Float32Array(w * h)];
+  const wsum = new Float32Array(h), depth = new Uint16Array(w * h);
+  for (const p of parts) {
+    const { c0, c1, y0, y1 } = p.s, ovTop = c0 - y0, ovBot = y1 - c1;
+    for (let y = y0; y < y1; y++) {
+      let wt = 1;
+      if (y < c0) wt = (y - y0 + 0.5) / (ovTop + 0.5);
+      else if (y >= c1) wt = (y1 - y - 0.5) / (ovBot + 0.5);
+      wt = wt * wt * (3 - 2 * wt); // smoothstep cross-fade
+      if (wt <= 0) continue;
+      wsum[y] += wt;
+      const so = (y - y0) * w, o = y * w;
+      for (let c = 0; c < 3; c++) { const d = rgb[c], s = p.rgb[c]; for (let x = 0; x < w; x++) d[o + x] += wt * s[so + x]; }
+      if (y >= c0 && y < c1) depth.set(p.depth.subarray(so, so + w), o);
+    }
+  }
+  for (let y = 0; y < h; y++) { const iw = 1 / wsum[y], o = y * w; for (let c = 0; c < 3; c++) { const d = rgb[c]; for (let x = 0; x < w; x++) d[o + x] *= iw; } }
+  return { rgb, depth };
+}
+
+const Engine = { planStrips, assembleStrips, boxBlur, smoothFast, gaussBlur, gaussKernel, pyrDown, pyrUp, luminance, focusEnergy, warp, mul3, inv3, estimateMotion, alignStack, scaleMatrix, commonRect, Fuser, I3 };
 if (typeof module !== 'undefined' && module.exports) module.exports = Engine;
