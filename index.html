@@ -295,8 +295,8 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
           </div>
           <div class="grp">
             <label for="steady">Steadiness</label>
-            <input type="range" id="steady" min="0" max="0.9" step="0.05" value="0.5" title="Smooths hand tremor; higher values lag behind the pointer more">
-            <span class="val" id="steadyVal">0.50</span>
+            <input type="range" id="steady" min="0" max="100" step="5" value="50" title="Hand-tremor stabilizer: the line follows the pointer on a short string (shown while drawing), then the finished stroke is smoothed. 0 = raw input.">
+            <span class="val" id="steadyVal">50%</span>
           </div>
         </div>
         <div class="drow">
@@ -1306,9 +1306,10 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     const pointers = new Map();
     const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
     const gBar = svgEl('g', {}), prevLine = svgEl('line', { 'stroke-linecap': 'round', visibility: 'hidden' });
+    const rope = svgEl('line', { stroke: '#d6336c', 'stroke-width': 1.5, 'stroke-dasharray': '3 3', 'vector-effect': 'non-scaling-stroke', visibility: 'hidden' });
     const curO = svgEl('circle', { fill: 'none', stroke: '#fff', 'stroke-width': 3, 'vector-effect': 'non-scaling-stroke', visibility: 'hidden' });
     const curI = svgEl('circle', { fill: 'none', stroke: '#000', 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', visibility: 'hidden' });
-    over.append(gBar, prevLine, curO, curI);
+    over.append(gBar, prevLine, rope, curO, curI);
     const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
     const r2 = v => Math.round(v * 100) / 100;
 
@@ -1499,7 +1500,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
         prevLine.setAttribute('stroke', color); prevLine.setAttribute('stroke-width', widths.pen); linePrev(); return;
       }
       const s = { t: erasing ? 'erase' : 'pen', c: color, w: widths[erasing ? 'erase' : 'pen'], p: [x, y] };
-      cur = { id: e.pointerId, kind: 'free', s, sx: x, sy: y };
+      cur = { id: e.pointerId, kind: 'free', s, bx: x, by: y };
       // pen pressure: only a stylus reports real pressure (mice report 0.5 while pressed, fingers vary by device)
       if (!erasing && e.pointerType === 'pen' && $('penP').checked) { cur.pr = e.pressure || 0; s.ws = [pw(cur.pr)]; }
       dot(ictx, s, x, y);
@@ -1515,19 +1516,54 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     function extendStroke(e) {
       let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
       if (!evs.length) evs = [e];
-      const k = +$('steady').value, minStep = Math.max(0.2, 0.75 / vs);
+      const st = +$('steady').value / 100, R = st * 20 / vs, minStep = Math.max(0.2, 0.75 / vs);
       for (const ev of evs) {
         const [rx, ry] = toImg(ev);
         if (cur.kind === 'line') { cur.x1 = rx; cur.y1 = ry; if (ev.shiftKey) snap(cur); continue; }
         if (cur.kind === 'cut') { cutAt(rx, ry); continue; }
-        cur.raw = [rx, ry]; cur.sx += (rx - cur.sx) * (1 - k); cur.sy += (ry - cur.sy) * (1 - k);
+        // stabilizer ("lazy brush"): the nib trails the pointer on a string of length R and only moves
+        // when the string is taut, so tremor smaller than R never reaches the line and there is no speed-dependent lag
+        cur.raw = [rx, ry];
+        const dx = rx - cur.bx, dy = ry - cur.by, d = Math.hypot(dx, dy);
+        if (d > R) { cur.bx += dx * (d - R) / d; cur.by += dy * (d - R) / d; } else if (R > 0) continue;
         if (cur.s.ws) cur.pr += (ev.pressure - cur.pr) * 0.5; // light smoothing; sensors are noisy
         const p = cur.s.p;
-        if (Math.hypot(cur.sx - p[p.length - 2], cur.sy - p[p.length - 1]) < minStep) continue;
-        p.push(cur.sx, cur.sy); if (cur.s.ws) cur.s.ws.push(pw(cur.pr));
+        if (Math.hypot(cur.bx - p[p.length - 2], cur.by - p[p.length - 1]) < minStep) continue;
+        p.push(cur.bx, cur.by); if (cur.s.ws) cur.s.ws.push(pw(cur.pr));
         if (p.length >= 6) paintPiece(cur.s, p.length / 2 - 2);
       }
       if (cur.kind === 'line') linePrev();
+      if (cur.kind === 'free' && R > 0 && cur.raw) {
+        rope.setAttribute('visibility', 'visible');
+        rope.setAttribute('x1', cur.bx); rope.setAttribute('y1', cur.by); rope.setAttribute('x2', cur.raw[0]); rope.setAttribute('y2', cur.raw[1]);
+      }
+    }
+    // Gaussian smoothing of a finished stroke along its arc length (sigma in image px). The stroke is
+    // resampled evenly first, so the result does not depend on pointer speed; ends stay pinned by point reflection.
+    function smoothStroke(s, sigma) {
+      const p = s.p, n = p.length / 2;
+      if (n < 3 || sigma < 0.3) return;
+      const L = [0]; for (let i = 1; i < n; i++) L.push(L[i - 1] + Math.hypot(p[2 * i] - p[2 * i - 2], p[2 * i + 1] - p[2 * i - 1]));
+      const T = L[n - 1]; if (T < 2 * sigma) return;
+      const h = Math.max(0.35, sigma / 3), m = Math.max(3, Math.ceil(T / h) + 1);
+      const qx = new Float64Array(m), qy = new Float64Array(m), qw = s.ws ? new Float64Array(m) : null;
+      for (let j = 0, i = 0; j < m; j++) {
+        const t = T * j / (m - 1); while (i < n - 2 && L[i + 1] < t) i++;
+        const f = L[i + 1] > L[i] ? (t - L[i]) / (L[i + 1] - L[i]) : 0;
+        qx[j] = p[2 * i] + (p[2 * i + 2] - p[2 * i]) * f; qy[j] = p[2 * i + 1] + (p[2 * i + 3] - p[2 * i + 1]) * f;
+        if (qw) qw[j] = s.ws[i] + (s.ws[i + 1] - s.ws[i]) * f;
+      }
+      const sg = sigma / h, r = Math.ceil(3 * sg), K = []; let ks = 0;
+      for (let k = -r; k <= r; k++) { const v = Math.exp(-k * k / (2 * sg * sg)); K.push(v); ks += v; }
+      const at = (a, j, odd) => j < 0 ? (odd ? 2 * a[0] - a[Math.min(m - 1, -j)] : a[Math.min(m - 1, -j)])
+        : j >= m ? (odd ? 2 * a[m - 1] - a[Math.max(0, 2 * (m - 1) - j)] : a[Math.max(0, 2 * (m - 1) - j)]) : a[j];
+      const out = [], ow = qw ? [] : null;
+      for (let j = 0; j < m; j++) {
+        let x = 0, y = 0, w = 0;
+        for (let k = -r; k <= r; k++) { const c = K[k + r]; x += c * at(qx, j + k, true); y += c * at(qy, j + k, true); if (qw) w += c * at(qw, j + k, false); }
+        out.push(x / ks, y / ks); if (ow) ow.push(w / ks);
+      }
+      s.p = out; if (ow) s.ws = ow;
     }
     function segDist(px, py, ax, ay, bx, by) {
       const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy, t = L ? clamp(((px - ax) * dx + (py - ay) * dy) / L, 0, 1) : 0;
@@ -1552,7 +1588,12 @@ async function makeDemo({ rgba, w, h, depth, n }) {
           p.push(c.raw[0], c.raw[1]); if (c.s.ws) c.s.ws.push(pw(c.pr));
           if (p.length >= 6) paintPiece(c.s, p.length / 2 - 2);
         }
-        paintEnd(c.s); const prev = strokes; strokes = strokes.concat([c.s]); commit(prev); }
+        rope.setAttribute('visibility', 'hidden');
+        const st = +$('steady').value / 100;
+        if (st > 0) smoothStroke(c.s, st * 5 / vs);
+        const prev = strokes; strokes = strokes.concat([c.s]);
+        if (st > 0) render(); else paintEnd(c.s); // the smoothed stroke replaces the live preview
+        commit(prev); }
       else if (c.kind === 'line') {
         prevLine.setAttribute('visibility', 'hidden');
         const s = { t: 'pen', c: color, w: widths.pen, p: Math.hypot(c.x1 - c.x0, c.y1 - c.y0) > 0.01 ? [c.x0, c.y0, c.x1, c.y1] : [c.x0, c.y0] };
@@ -1563,7 +1604,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     function cancelStroke() {
       if (!cur) return;
       if (cur.kind === 'cut') strokes = cur.before;
-      prevLine.setAttribute('visibility', 'hidden'); cur = null; render();
+      prevLine.setAttribute('visibility', 'hidden'); rope.setAttribute('visibility', 'hidden'); cur = null; render();
     }
 
     // --- pointer input: mouse/pen/one finger draws; two fingers, Space, middle button or the Pan tool move the view
@@ -1648,7 +1689,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     if (store.get('fs.penP') === '0') $('penP').checked = false;
     if (+store.get('fs.penMin') >= 5) $('penMin').value = store.get('fs.penMin');
     showMin();
-    $('steady').oninput = e => { $('steadyVal').textContent = (+e.target.value).toFixed(2); };
+    $('steady').oninput = e => { $('steadyVal').textContent = e.target.value + '%'; store.set('fs.steady', e.target.value); };
+    { const v = store.get('fs.steady'); if (v !== null && v !== '' && isFinite(+v)) { $('steady').value = v; $('steadyVal').textContent = $('steady').value + '%'; } }
     $('undoBtn').onclick = doUndo; $('redoBtn').onclick = doRedo;
     $('inkClear').onclick = () => { if (!strokes.length) return; const prev = strokes; strokes = []; render(); commit(prev); };
     $('bgSel').onchange = e => { const v = e.target.value; setBg(v === 'result' || v === 'depth' ? v : +v); };
