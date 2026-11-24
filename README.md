@@ -20,6 +20,8 @@ A browser app for **focus stacking**. It merges photos of one scene taken at dif
   - Pen pressure: with a stylus (Wacom, Apple Pencil, Surface Pen and similar), pressing harder draws a heavier line, from the *Lightest* share of the width up to the full width. Mouse and finger lines keep a constant width, and the *Pen pressure* box turns it off. Pressure lines are saved in the SVG as filled outlines, so the varying width survives in Inkscape or Illustrator.
   - Zoom with the wheel, pinch, or the buttons; pan with Space-drag, the middle button, two fingers, or the Pan tool. With a stylus, fingers pan and the stylus eraser end erases.
   - Save the drawing as a transparent PNG, as an SVG (vector paths for Inkscape or Illustrator), composited on the current background, or as an editable file to continue later. The scale bar can be added to the drawing.
+  - **Layered PSD**: one Photoshop file with the background and the drawing as separate layers (plus a white *Paper* layer when the background is faded, and the scale bar on its own layer). Opens with its layers in Adobe Fresco, Photoshop (iPad and desktop), Affinity, Procreate, Krita and GIMP.
+  - **Share…** (Draw tab and Result tab) opens the system share sheet, so on an iPad the file goes straight to Fresco, Photoshop, Photos, Files, Notes or Mail. *Send to app* picks what is sent: the layered PSD, the drawing on its background, the drawing alone, background and drawing as two PNGs, or the SVG. Where a browser cannot share files, the same files are saved instead.
 - A built-in synthetic test stack, so the app shows a working example as soon as it opens.
 
 ## Method
@@ -45,7 +47,8 @@ Worst-case alignment error is 0.16 px.
 ## Development
 - `src/engine.js` holds the image maths: plain typed arrays, no DOM. It runs in a Web Worker in the browser and under Node for the tests.
 - `src/app.template.html` holds the user interface and the worker code.
-- `python3 build.py` inlines the engine into the template and writes `index.html`.
+- `src/psd.js` writes layered PSD files (8-bit RGB, PackBits). `node tests/psd.js out.psd && python3 tests/psd_check.py out.psd` checks it against psd-tools.
+- `python3 build.py` inlines the engine and the PSD writer into the template and writes `index.html`.
 
 ## Limits
 - Speed: about 2 s per photo at 6 MP and about 8 s per photo at 24 MP, on a single CPU core.
