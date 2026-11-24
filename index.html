@@ -127,6 +127,9 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
 .dlayer canvas, .dlayer svg { display: block }
 .dlayer canvas + canvas, .dlayer svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none }
 .dlayer.px canvas { image-rendering: pixelated }
+/* the ink is drawn at screen resolution (CSS px × devicePixelRatio) from the vector strokes, never upscaled */
+.dink { position: absolute; left: 0; top: 0; pointer-events: none }
+.dlayer.dtop { background: none; box-shadow: none; pointer-events: none }
 .dhud { position: absolute; left: 8px; bottom: 8px; font: 500 0.72rem/1 var(--f-mono); background: rgb(0 0 0 / .6); color: #fff; padding: 5px 7px; border-radius: 4px; pointer-events: none }
 .dbg { position: absolute; left: 8px; top: 8px; font: 500 0.72rem/1 var(--f-mono); background: rgb(0 0 0 / .6); color: #fff; padding: 5px 7px; border-radius: 4px; pointer-events: none }
 .hint.warn { color: var(--peak) }
@@ -318,7 +321,9 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
         <div class="dstage" id="dStage" tabindex="0" aria-label="Drawing canvas. Draw with mouse, pen or one finger; pinch or scroll to zoom.">
           <div class="dlayer" id="dLayer">
             <canvas id="cvBg" width="8" height="8"></canvas>
-            <canvas id="cvInk" width="8" height="8"></canvas>
+          </div>
+          <canvas id="cvInk" class="dink" width="8" height="8"></canvas>
+          <div class="dlayer dtop" id="dTop">
             <svg id="dOver" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"></svg>
           </div>
           <span class="dbg" id="dBgTag">Stacked</span>
@@ -333,7 +338,11 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
             <button class="btn" id="zIn" type="button" aria-label="Zoom in" title="Zoom in (+)">+</button>
           </div>
           <div class="grp">
-            <button class="btn" id="inkPng" type="button" disabled title="Lines only, transparent background, same pixel size as the result">Save drawing PNG</button>
+            <label for="inkScale">Export size</label>
+            <select id="inkScale" title="Pixel size of PNG and PSD exports. The lines are re-rendered from their vector paths at this size, so they stay smooth; the background is resampled to match. The scale bar stays correct.">
+              <option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option>
+            </select>
+            <button class="btn" id="inkPng" type="button" disabled title="Lines only, transparent background, at the export size">Save drawing PNG</button>
             <button class="btn" id="inkSvg" type="button" disabled title="Vector lines for Inkscape, Illustrator or a journal figure">Save drawing SVG</button>
             <button class="btn" id="inkComp" type="button" disabled title="The current background (at the current fade) with the drawing on top">Save drawing on background</button>
             <button class="btn" id="inkPsd" type="button" disabled title="Photoshop file with the background and the drawing as separate layers (opens in Fresco, Photoshop, Affinity, Procreate)">Save layered PSD</button>
@@ -1457,7 +1466,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
   // Lines live in result pixels. Every slice is warped into the result's frame by the worker, so a
   // drawing stays registered when the background switches between the stack and any slice.
   const Draw = (() => {
-    const stage = $('dStage'), layer = $('dLayer'), bg = $('cvBg'), ink = $('cvInk'), over = $('dOver');
+    const stage = $('dStage'), layer = $('dLayer'), top = $('dTop'), bg = $('cvBg'), ink = $('cvInk'), over = $('dOver');
     const ictx = ink.getContext('2d'), NS = 'http://www.w3.org/2000/svg';
     const HINT = $('drawHint').textContent;
     let W = 0, H = 0, strokes = [], dirty = false, tool = 'pen', color = '#000000', widthTouched = false;
@@ -1542,10 +1551,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
     }
     const rad = (s, i) => (s.ws ? s.ws[i] : s.w) / 2;
     function dot(g, s, x, y) { style(g, s); g.beginPath(); g.arc(x, y, rad(s, 0), 0, 2 * Math.PI); g.fill(); }
+    function path2(s) { // Path2D of a committed stroke, built once (the screen re-renders every stroke on each pan or zoom)
+      if (s._p2) return s._p2;
+      const P = new Path2D(s.ws ? strokeD(s) : pathD(s.p));
+      if (s !== (cur && cur.s)) Object.defineProperty(s, '_p2', { value: P }); return P;
+    }
     function paintFull(g, s) {
       if (s.p.length === 2) return dot(g, s, s.p[0], s.p[1]);
       style(g, s);
-      if (s.ws) g.fill(new Path2D(strokeD(s))); else g.stroke(new Path2D(pathD(s.p)));
+      if (s.ws) g.fill(path2(s)); else g.stroke(path2(s));
     }
     function paintPiece(s, i) { // the piece of the curve fixed once point i+1 exists
       if (s.ws) { style(ictx, s); ictx.fill(new Path2D(outlineD(piece(s, i, [])))); return; }
@@ -1553,16 +1567,32 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
       style(ictx, s); ictx.beginPath(); ictx.moveTo(x0, y0);
       ictx.quadraticCurveTo(p[2 * i], p[2 * i + 1], (p[2 * i] + p[2 * i + 2]) / 2, (p[2 * i + 1] + p[2 * i + 3]) / 2); ictx.stroke();
     }
-    function paintEnd(s) {
-      const p = s.p, n = p.length / 2; if (n < 2) return;
-      if (s.ws) return paintPiece(s, n - 1);
-      const x0 = n === 2 ? p[0] : (p[2 * n - 4] + p[2 * n - 2]) / 2, y0 = n === 2 ? p[1] : (p[2 * n - 3] + p[2 * n - 1]) / 2;
-      style(ictx, s); ictx.beginPath(); ictx.moveTo(x0, y0); ictx.lineTo(p[2 * n - 2], p[2 * n - 1]); ictx.stroke();
+    // On screen the ink canvas covers the stage at device resolution, and every stroke is re-rasterised from
+    // its vector path with the current view transform. A line is therefore anti-aliased at the pixel pitch of the
+    // display at any zoom, instead of being drawn at result resolution and magnified (which showed the pixel grid).
+    let kx = 1, ky = 1, clipped = false;
+    function sizeInk() {
+      const r = stage.getBoundingClientRect(), dpr = Math.min(3, window.devicePixelRatio || 1);
+      const cw = Math.max(1, Math.round(r.width * dpr)), ch = Math.max(1, Math.round(r.height * dpr));
+      if (ink.width !== cw || ink.height !== ch) { ink.width = cw; ink.height = ch; clipped = false; }
+      ink.style.width = r.width + 'px'; ink.style.height = r.height + 'px';
+      kx = r.width ? cw / r.width : dpr; ky = r.height ? ch / r.height : dpr;
     }
+    function paintAll(g, list) { for (const s of list) paintFull(g, s); g.globalCompositeOperation = 'source-over'; }
     function render() {
-      ictx.globalCompositeOperation = 'source-over'; ictx.clearRect(0, 0, W, H);
-      for (const s of strokes) paintFull(ictx, s);
-      ictx.globalCompositeOperation = 'source-over';
+      if (clipped) { ictx.restore(); clipped = false; }
+      ictx.setTransform(1, 0, 0, 1, 0, 0); ictx.globalCompositeOperation = 'source-over'; ictx.clearRect(0, 0, ink.width, ink.height);
+      if (!W) return;
+      // the transform and the clip to the image stay set, so live pieces of the current stroke use them too
+      ictx.save(); clipped = true;
+      ictx.setTransform(kx * vs, 0, 0, ky * vs, kx * tx, ky * ty);
+      ictx.beginPath(); ictx.rect(0, 0, W, H); ictx.clip();
+      paintAll(ictx, cur && cur.kind === 'free' ? strokes.concat([cur.s]) : strokes);
+    }
+    // Export raster: the same vector strokes rendered at k × result pixels
+    function inkRaster(k) {
+      const c = document.createElement('canvas'); c.width = W * k; c.height = H * k;
+      const g = c.getContext('2d', { willReadFrequently: true }); g.setTransform(k, 0, 0, k, 0, 0); paintAll(g, strokes); return c;
     }
 
     // --- history (each state is an immutable array of stroke objects)
@@ -1579,7 +1609,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
 
     // --- view
     function applyView() {
-      layer.style.transform = `translate(${tx}px, ${ty}px) scale(${vs})`;
+      layer.style.transform = top.style.transform = `translate(${tx}px, ${ty}px) scale(${vs})`;
+      sizeInk(); render();
       layer.classList.toggle('px', vs >= 2);
       $('dHud').textContent = `${vs >= 1 ? Math.round(vs * 100) : +(vs * 100).toPrecision(2)}%`;
     }
@@ -1595,7 +1626,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
     function zoomCentre(f) { const r = stage.getBoundingClientRect(); zoomAt(f, r.width / 2, r.height / 2); }
     const local = e => { const r = stage.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
     const toImg = e => { const [x, y] = local(e); return [(x - tx) / vs, (y - ty) / vs]; };
-    new ResizeObserver(() => { if (fitted && !$('drawBox').hidden) fit(); }).observe(stage);
+    new ResizeObserver(() => { if ($('drawBox').hidden || !W) return; if (fitted) fit(); else applyView(); }).observe(stage);
 
     // --- backgrounds
     const label = k => k === 'result' ? 'Stacked result' : k === 'depth' ? 'Depth map' : `Slice ${k + 1}${result && result.names[k] ? ' · ' + result.names[k] : ''}`;
@@ -1757,13 +1788,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
         const st = +$('steady').value / 100;
         if (st > 0) smoothStroke(c.s, st * 5 / vs);
         const prev = strokes; strokes = strokes.concat([c.s]);
-        if (st > 0) render(); else paintEnd(c.s); // the smoothed stroke replaces the live preview
+        render(); // one clean path replaces the live preview (smoothed, and without the overlapping edges of its pieces)
         commit(prev); }
       else if (c.kind === 'line') {
         prevLine.setAttribute('visibility', 'hidden');
         const s = { t: 'pen', c: color, w: widths.pen, p: Math.hypot(c.x1 - c.x0, c.y1 - c.y0) > 0.01 ? [c.x0, c.y0, c.x1, c.y1] : [c.x0, c.y0] };
-        paintFull(ictx, s); ictx.globalCompositeOperation = 'source-over';
-        const prev = strokes; strokes = strokes.concat([s]); commit(prev);
+        const prev = strokes; strokes = strokes.concat([s]); render(); commit(prev);
       } else if (c.kind === 'cut' && strokes !== c.before) commit(c.before);
     }
     function cancelStroke() {
@@ -1891,9 +1921,25 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
     // --- export
     const drawName = () => baseName().replace(/_stacked$/, '') + '_drawing';
     const bgName = k => k === 'result' ? 'stack' : k === 'depth' ? 'depthmap' : 'slice' + (k + 1);
-    function barOnCanvas(g) {
+    // export size: k × result pixels, capped at 16.7 MP per canvas (the iOS Safari limit)
+    const MAXPX = 16777216, fitsK = k => W * k * H * k <= MAXPX;
+    function expK() { let k = Math.max(1, Math.round(+$('inkScale').value || 1)); while (k > 1 && !fitsK(k)) k--; return k; }
+    function scaleOpts() {
+      for (const o of $('inkScale').options) {
+        const k = +o.value; o.disabled = k > 1 && !fitsK(k);
+        o.textContent = `${k}× · ${W * k}×${H * k} px` + (k === 1 ? ' (result)' : '') + (o.disabled ? ' · too large' : '');
+      }
+      let k = clamp(Math.round(+(store.get('fs.inkScale') || 2)) || 2, 1, 4); while (k > 1 && !fitsK(k)) k--; $('inkScale').value = String(k);
+    }
+    $('inkScale').onchange = () => { store.set('fs.inkScale', $('inkScale').value); clearReady(); };
+    const sfx = k => k > 1 ? `_${k}x` : '';
+    function bgRaster(k) { // the background resampled to the export size (bicubic-quality), so the layers stay registered
+      const c = document.createElement('canvas'); c.width = W * k; c.height = H * k; const g = c.getContext('2d', { willReadFrequently: true });
+      g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(bg, 0, 0, W * k, H * k); return c;
+    }
+    function barOnCanvas(g, k = 1) {
       const sb = $('inkBar').checked ? scaleBar() : null; if (!sb) return;
-      g.save(); g.globalCompositeOperation = 'source-over'; g.fillStyle = color;
+      g.save(); g.scale(k, k); g.globalCompositeOperation = 'source-over'; g.fillStyle = color;
       g.fillRect(sb.x0, sb.y - sb.th, sb.px, sb.th);
       g.font = `600 ${sb.fs}px "IBM Plex Sans", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
       g.fillText(sb.label, (sb.x0 + sb.x1) / 2, sb.y - sb.th - sb.fs * 0.25); g.restore();
@@ -1903,10 +1949,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
       if (!blob) return setStatus('Could not encode the image.', true);
       await saveBlob(blob, name);
     }
-    function flat(withBg) {
-      const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
-      if (withBg) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.globalAlpha = +$('bgOp').value / 100; g.drawImage(bg, 0, 0); g.globalAlpha = 1; }
-      g.drawImage(ink, 0, 0); barOnCanvas(g); return c;
+    function flat(withBg, k = expK(), inkC = inkRaster(k)) {
+      const c = document.createElement('canvas'); c.width = W * k; c.height = H * k; const g = c.getContext('2d', { willReadFrequently: true });
+      if (withBg) {
+        g.fillStyle = '#fff'; g.fillRect(0, 0, W * k, H * k); g.globalAlpha = +$('bgOp').value / 100;
+        g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(bg, 0, 0, W * k, H * k); g.globalAlpha = 1;
+      }
+      g.drawImage(inkC, 0, 0); barOnCanvas(g, k); return c;
     }
     const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
     function toSVG() {
@@ -1928,20 +1977,21 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
         (defs ? `\n<defs>${defs}\n</defs>` : '') + `\n<g id="drawing" stroke-linecap="round" stroke-linejoin="round">${body}\n</g>${bar}\n</svg>\n`;
     }
     // layered Photoshop file: [white paper if the background is faded] + background + drawing [+ scale bar]
-    function layerPixels(draw) {
-      const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d', { willReadFrequently: true });
-      draw(g); return g.getImageData(0, 0, W, H).data;
+    const pixels = c => c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+    function layerPixels(draw, k) {
+      const c = document.createElement('canvas'); c.width = W * k; c.height = H * k; const g = c.getContext('2d', { willReadFrequently: true });
+      draw(g); return g.getImageData(0, 0, W * k, H * k).data;
     }
     function buildPSD() {
-      const fade = +$('bgOp').value / 100, layers = [];
-      if (fade < 1) layers.push({ name: 'Paper', rgba: layerPixels(g => { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }) });
-      layers.push({ name: label(bgKey), rgba: layerPixels(g => g.drawImage(bg, 0, 0)), opacity: fade });
-      layers.push({ name: 'Drawing', rgba: ink.getContext('2d').getImageData(0, 0, W, H).data });
-      if ($('inkBar').checked && scaleBar()) layers.push({ name: 'Scale bar', rgba: layerPixels(barOnCanvas) });
-      const comp = flat(true).getContext('2d').getImageData(0, 0, W, H).data;
-      return new Blob(PSD.encodePSD(W, H, layers, comp), { type: 'image/vnd.adobe.photoshop' });
+      const fade = +$('bgOp').value / 100, layers = [], k = expK(), inkC = inkRaster(k);
+      if (fade < 1) layers.push({ name: 'Paper', rgba: layerPixels(g => { g.fillStyle = '#fff'; g.fillRect(0, 0, W * k, H * k); }, k) });
+      layers.push({ name: label(bgKey), rgba: pixels(bgRaster(k)), opacity: fade });
+      layers.push({ name: 'Drawing', rgba: pixels(inkC) });
+      if ($('inkBar').checked && scaleBar()) layers.push({ name: 'Scale bar', rgba: layerPixels(g => barOnCanvas(g, k), k) });
+      const comp = pixels(flat(true, k, inkC));
+      return new Blob(PSD.encodePSD(W * k, H * k, layers, comp), { type: 'image/vnd.adobe.photoshop' });
     }
-    const psdName = () => `${drawName()}_on_${bgName(bgKey)}.psd`;
+    const psdName = () => `${drawName()}_on_${bgName(bgKey)}${sfx(expK())}.psd`;
     $('inkPsd').onclick = async () => {
       setStatus('Writing the PSD…'); await new Promise(r => setTimeout(r, 30));
       try { await saveBlob(buildPSD(), psdName()); dirty = false; } catch (e) { setStatus('Could not write the PSD: ' + (e.message || e), true); }
@@ -1953,14 +2003,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
         const b = buildPSD(), f = toFile(b, psdName());
         return canShareFiles([f]) ? [f] : [new File([b], psdName(), { type: 'application/octet-stream' })];
       }
-      if (what === 'comp') return [await png(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`)];
-      if (what === 'ink') return [await png(flat(false), drawName() + '.png')];
+      const x = sfx(expK());
+      if (what === 'comp') return [await png(flat(true), `${drawName()}_on_${bgName(bgKey)}${x}.png`)];
+      if (what === 'ink') return [await png(flat(false), drawName() + x + '.png')];
       if (what === 'svg') return [toFile(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg')];
       // two same-size PNGs: background first, so an app that stacks imports in order puts the lines on top
-      const c = document.createElement('canvas'); c.width = W; c.height = H; c.getContext('2d').drawImage(bg, 0, 0);
-      return [await png(c, `${baseName().replace(/_stacked$/, '')}_${bgName(bgKey)}.png`), await png(flat(false), drawName() + '.png')];
+      return [await png(bgRaster(expK()), `${baseName().replace(/_stacked$/, '')}_${bgName(bgKey)}${x}.png`), await png(flat(false), drawName() + x + '.png')];
     }
-    const shareKey = () => [$('shareWhat').value, bgKey, $('bgOp').value, $('inkBar').checked, strokes.length, undo.length, redo.length, W, H].join('|');
+    const shareKey = () => [$('shareWhat').value, bgKey, $('bgOp').value, $('inkBar').checked, strokes.length, undo.length, redo.length, W, H, expK()].join('|');
     $('inkShare').onclick = async () => {
       const btn = $('inkShare'), key = shareKey(), what = $('shareWhat').value;
       if (shareReady(key)) return;
@@ -1970,8 +2020,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
       finally { buttons(); }
     };
     $('shareWhat').onchange = () => { clearReady(); buttons(); };
-    $('inkPng').onclick = async () => { await saveCanvas(flat(false), drawName() + '.png'); dirty = false; };
-    $('inkComp').onclick = () => saveCanvas(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`);
+    $('inkPng').onclick = async () => { await saveCanvas(flat(false), drawName() + sfx(expK()) + '.png'); dirty = false; };
+    $('inkComp').onclick = () => saveCanvas(flat(true), `${drawName()}_on_${bgName(bgKey)}${sfx(expK())}.png`);
     $('inkSvg').onclick = async () => { await saveBlob(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg'); dirty = false; };
     $('inkSave').onclick = async () => {
       const u = parseFloat($('umpp').value);
@@ -2003,8 +2053,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
       async onResult() {
         const nw = result.w, nh = result.h, resized = W && (nw !== W || nh !== H);
         W = nw; H = nh;
-        for (const c of [ink, bg]) { c.width = W; c.height = H; }
-        layer.style.width = W + 'px'; layer.style.height = H + 'px'; over.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        bg.width = W; bg.height = H; scaleOpts();
+        for (const l of [layer, top]) { l.style.width = W + 'px'; l.style.height = H + 'px'; } over.setAttribute('viewBox', `0 0 ${W} ${H}`);
         $('dEmpty').hidden = true;
         warn(resized && strokes.length ? `The new result is ${W}×${H} px, a different size from the one you drew on, so the drawing may not line up. Undo or Clear if needed.` : '');
         if (resultBm) resultBm.close(); if (depthBm) depthBm.close();
