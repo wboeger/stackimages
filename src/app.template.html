@@ -98,6 +98,33 @@ details p, details li { color: var(--muted); max-width: 70ch }
 .cmpbar label { white-space: nowrap }
 .cmpbar select { width: auto; max-width: 100%; min-width: 0; flex: 1 1 220px }
 .cmpbar .hint { flex-basis: 100% }
+/* Draw view: tracing layer over the stack or any aligned slice */
+.draw { display: flex; flex-direction: column; gap: 8px }
+.drow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px }
+.drow .grp { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px }
+.drow label { white-space: nowrap; font-size: 0.82rem }
+.drow input[type=range] { width: 110px; flex: 0 1 auto }
+.drow select { width: auto; min-width: 0; max-width: 100%; flex: 1 1 200px }
+.drow .val { font: 0.78rem var(--f-mono); color: var(--muted); min-width: 4.5ch; font-variant-numeric: tabular-nums }
+.seg { display: inline-flex; background: var(--well); border-radius: 7px; padding: 3px; gap: 2px; flex-wrap: wrap }
+.seg button { border: 0; background: none; color: var(--muted); padding: 5px 9px; border-radius: 5px; font: 500 0.82rem var(--f-body); cursor: pointer }
+.seg button[aria-pressed=true] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / .12) }
+.seg button kbd { font: 0.68rem var(--f-mono); color: var(--muted); margin-left: 3px }
+.sw { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line); cursor: pointer; padding: 0 }
+.sw[aria-pressed=true] { outline: 2px solid var(--accent); outline-offset: 1px }
+input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: pointer }
+.dstage { position: relative; height: 68vh; min-height: 300px; background: var(--well); border-radius: var(--r); overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair }
+.dstage.pan { cursor: grab } .dstage.panning { cursor: grabbing }
+.dlayer { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #fff; box-shadow: 0 1px 6px rgb(0 0 0 / .18); line-height: 0 }
+.dlayer canvas, .dlayer svg { display: block }
+.dlayer canvas + canvas, .dlayer svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none }
+.dlayer.px canvas { image-rendering: pixelated }
+.dhud { position: absolute; left: 8px; bottom: 8px; font: 500 0.72rem/1 var(--f-mono); background: rgb(0 0 0 / .6); color: #fff; padding: 5px 7px; border-radius: 4px; pointer-events: none }
+.dbg { position: absolute; left: 8px; top: 8px; font: 500 0.72rem/1 var(--f-mono); background: rgb(0 0 0 / .6); color: #fff; padding: 5px 7px; border-radius: 4px; pointer-events: none }
+.hint.warn { color: var(--peak) }
+@media (max-width: 860px) { .dstage { height: 60vh } }
+@media (pointer: coarse) { .seg button kbd { display: none } }
+.dempty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 0.9rem; text-align: center; padding: 16px }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important } }
 </style>
 
@@ -196,6 +223,7 @@ details p, details li { color: var(--muted); max-width: 70ch }
           <button role="tab" id="tabResult" aria-selected="true" data-view="result">Result</button>
           <button role="tab" id="tabDepth" aria-selected="false" data-view="depth">Depth map</button>
           <button role="tab" id="tabCmp" aria-selected="false" data-view="compare">Compare</button>
+          <button role="tab" id="tabDraw" aria-selected="false" data-view="draw">Draw</button>
         </div>
         <div class="tools">
           <button class="btn" id="zoomBtn" type="button">View 1:1</button>
@@ -222,6 +250,90 @@ details p, details li { color: var(--muted); max-width: 70ch }
         <select id="cmpSel"></select>
         <span class="hint">Each slice is shown aligned and cropped like the result. Drag on the image or use the slider to move the divider.</span>
       </div>
+      <section class="draw" id="drawBox" hidden aria-label="Line drawing">
+        <div class="drow">
+          <div class="seg" role="group" aria-label="Drawing tool" id="toolSeg">
+            <button type="button" data-tool="pen" aria-pressed="true" title="Freehand pen (B)">Pen<kbd>B</kbd></button>
+            <button type="button" data-tool="line" aria-pressed="false" title="Straight line; hold Shift to snap to 15° (L)">Line<kbd>L</kbd></button>
+            <button type="button" data-tool="erase" aria-pressed="false" title="Erase part of the drawing (E)">Eraser<kbd>E</kbd></button>
+            <button type="button" data-tool="cut" aria-pressed="false" title="Delete whole strokes you touch (X)">Delete stroke<kbd>X</kbd></button>
+            <button type="button" data-tool="pan" aria-pressed="false" title="Move the view; or hold Space, or drag with the middle button (H)">Pan<kbd>H</kbd></button>
+          </div>
+          <div class="grp">
+            <button class="btn" id="undoBtn" type="button" disabled title="Undo (Ctrl+Z)">Undo</button>
+            <button class="btn" id="redoBtn" type="button" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
+            <button class="btn" id="inkClear" type="button" disabled title="Remove the whole drawing (can be undone)">Clear</button>
+          </div>
+        </div>
+        <div class="drow">
+          <div class="grp">
+            <label for="penW">Width</label>
+            <input type="range" id="penW" min="0.5" max="40" step="0.5" value="3">
+            <span class="val" id="penWVal">3 px</span>
+          </div>
+          <div class="grp" role="group" aria-label="Ink colour" id="swatches">
+            <button type="button" class="sw" data-c="#000000" style="background:#000000" aria-label="Black" aria-pressed="true"></button>
+            <button type="button" class="sw" data-c="#ffffff" style="background:#ffffff" aria-label="White" aria-pressed="false"></button>
+            <button type="button" class="sw" data-c="#e0245e" style="background:#e0245e" aria-label="Magenta" aria-pressed="false"></button>
+            <button type="button" class="sw" data-c="#ffd400" style="background:#ffd400" aria-label="Yellow" aria-pressed="false"></button>
+            <button type="button" class="sw" data-c="#00b3c7" style="background:#00b3c7" aria-label="Cyan" aria-pressed="false"></button>
+            <input type="color" id="penC" value="#000000" aria-label="Custom ink colour">
+          </div>
+          <div class="grp">
+            <label for="steady">Steadiness</label>
+            <input type="range" id="steady" min="0" max="0.9" step="0.05" value="0.5" title="Smooths hand tremor; higher values lag behind the pointer more">
+            <span class="val" id="steadyVal">0.50</span>
+          </div>
+        </div>
+        <div class="drow">
+          <label for="bgSel">Trace over</label>
+          <button class="btn" id="bgPrev" type="button" title="Previous slice ([ or ,)" aria-label="Previous slice">‹</button>
+          <select id="bgSel"></select>
+          <button class="btn" id="bgNext" type="button" title="Next slice (] or .)" aria-label="Next slice">›</button>
+          <div class="grp">
+            <label for="bgFocus">Focus</label>
+            <input type="range" id="bgFocus" min="1" max="2" step="1" value="1" aria-label="Scrub through the focus slices" title="Scrub through the aligned focus slices, like turning the fine-focus knob">
+          </div>
+          <div class="grp">
+            <label for="bgOp">Background</label>
+            <input type="range" id="bgOp" min="0" max="100" step="5" value="100" title="Fade the background towards white paper to check the drawing (O toggles)">
+            <span class="val" id="bgOpVal">100%</span>
+          </div>
+        </div>
+        <div class="dstage" id="dStage" tabindex="0" aria-label="Drawing canvas. Draw with mouse, pen or one finger; pinch or scroll to zoom.">
+          <div class="dlayer" id="dLayer">
+            <canvas id="cvBg" width="8" height="8"></canvas>
+            <canvas id="cvInk" width="8" height="8"></canvas>
+            <svg id="dOver" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"></svg>
+          </div>
+          <span class="dbg" id="dBgTag">Stacked</span>
+          <span class="dhud" id="dHud">100%</span>
+          <div class="dempty" id="dEmpty">Stack some photos first, then trace over the result or any single slice.</div>
+        </div>
+        <div class="drow">
+          <div class="grp">
+            <button class="btn" id="zOut" type="button" aria-label="Zoom out" title="Zoom out (−)">−</button>
+            <button class="btn" id="zFit" type="button" title="Fit to view (0)">Fit</button>
+            <button class="btn" id="z11" type="button" title="One screen pixel per image pixel (1)">1:1</button>
+            <button class="btn" id="zIn" type="button" aria-label="Zoom in" title="Zoom in (+)">+</button>
+          </div>
+          <div class="grp">
+            <button class="btn" id="inkPng" type="button" disabled title="Lines only, transparent background, same pixel size as the result">Save drawing PNG</button>
+            <button class="btn" id="inkSvg" type="button" disabled title="Vector lines for Inkscape, Illustrator or a journal figure">Save drawing SVG</button>
+            <button class="btn" id="inkComp" type="button" disabled title="The current background (at the current fade) with the drawing on top">Save drawing on background</button>
+          </div>
+          <div class="grp">
+            <button class="btn" id="inkSave" type="button" disabled title="Editable drawing, to continue later on the same stack">Save editable</button>
+            <button class="btn" id="inkOpen" type="button" title="Open a drawing saved with Save editable">Open editable</button>
+            <input type="file" id="inkFile" accept=".json,application/json" hidden>
+          </div>
+          <div class="field check" style="margin:0">
+            <input type="checkbox" id="inkBar" checked>
+            <label for="inkBar">Scale bar on drawing</label>
+          </div>
+        </div>
+        <span class="hint" id="drawHint">Every slice is aligned and cropped exactly like the stacked result, so the drawing stays registered when you switch. Lines are stored in result pixels. Shortcuts: [ and ] step through slices, S shows the stack, Ctrl+Z undoes.</span>
+      </section>
       <div class="legend" id="legend" hidden><span>slice 1 · near</span><span class="ramp" id="ramp"></span><span id="legendFar">far</span></div>
       <div class="stats" id="stats"></div>
       <details>
@@ -267,19 +379,19 @@ self.onmessage = async (ev) => {
     if (d.type === 'prepare') return await prepare(d.files, d.opts, d.run);
     if (d.type === 'strip') return await fuseStrip(d);
     if (d.type === 'assemble') return assemble(d);
-    if (d.type === 'slice') return await sendSlice(d.k);
+    if (d.type === 'slice') return await sendSlice(d.k, d.gen);
   } catch (e) {
     post({ type: 'error', run: d.run, message: (e && e.name === 'RangeError') ? 'Ran out of memory. Choose a smaller working size and try again.' : String(e && e.message || e) });
   }
 };
 
 let last = null; // geometry of the most recent stack, for on-demand aligned slices
-async function sendSlice(k) {
-  if (!last || !last.files[k]) return;
+async function sendSlice(k, gen) {
+  if (!last || !last.files[k]) return post({ type: 'slice', k, gen, rgba: null });
   const { files, Ms, W, H, R, shiftR } = last;
   const rgb = toPlanar(await bitmapPixels(files[k], W, H), W * H).map(c => Engine.warp(c, W, H, Engine.mul3(Ms[k], shiftR), R.w, R.h));
   const rgba = toRGBA(rgb, R.w * R.h);
-  post({ type: 'slice', k, rgba, w: R.w, h: R.h }, [rgba.buffer]);
+  post({ type: 'slice', k, gen, rgba, w: R.w, h: R.h }, [rgba.buffer]);
 }
 
 // Step 1 (one worker): read small proxies, align, decide the output rectangle.
@@ -471,7 +583,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   // scale bar
   const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
   { const v = store.get('fs.umpp'); if (v) $('umpp').value = v; if (store.get('fs.barOn') === '0') $('barOn').checked = false; }
-  $('umpp').oninput = () => { store.set('fs.umpp', $('umpp').value); redrawResult(); };
+  $('umpp').oninput = () => { store.set('fs.umpp', $('umpp').value); redrawResult(); Draw.overlay(); };
   $('barOn').onchange = () => { store.set('fs.barOn', $('barOn').checked ? '1' : '0'); redrawResult(); };
   function niceLength(maxUm) { const p = 10 ** Math.floor(Math.log10(maxUm)); for (const m of [5, 2, 1]) if (m * p <= maxUm) return m * p; return p; }
   function fmtUm(um) { return um >= 1000 ? `${+(um / 1000).toPrecision(3)} mm` : `${+um.toPrecision(3)} µm`; }
@@ -482,15 +594,26 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     const len = niceLength(0.2 * result.w * eff), px = len / eff;
     $('barInfo').textContent = `Result: ${fmtUm(eff)} per pixel, field of view ${fmtUm(result.w * eff)} × ${fmtUm(result.h * eff)}. Bar = ${fmtUm(len)}.`;
     if (!$('barOn').checked) return;
-    const g = cv.getContext('2d'), s = Math.max(result.w, result.h);
-    const th = Math.max(4, Math.round(s * 0.006)), fs = Math.max(14, Math.round(s * 0.022)), m = Math.round(s * 0.03);
-    const x1 = result.w - m, x0 = x1 - px, y = result.h - m;
+    const { x0, x1, y, th, fs } = scaleBarGeom(px), g = cv.getContext('2d');
     g.save();
     g.font = `600 ${fs}px "IBM Plex Sans", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'bottom';
     g.lineJoin = 'round'; g.lineWidth = Math.max(3, fs / 5); g.strokeStyle = 'rgba(0,0,0,.75)';
     g.strokeRect(x0, y - th, px, th); g.strokeText(fmtUm(len), (x0 + x1) / 2, y - th - fs * 0.25);
     g.fillStyle = '#fff'; g.fillRect(x0, y - th, px, th); g.fillText(fmtUm(len), (x0 + x1) / 2, y - th - fs * 0.25);
     g.restore();
+  }
+  // scale bar placement in result pixels (bottom right), shared by the result and the drawing exports
+  function scaleBarGeom(px) {
+    const s = Math.max(result.w, result.h);
+    const th = Math.max(4, Math.round(s * 0.006)), fs = Math.max(14, Math.round(s * 0.022)), m = Math.round(s * 0.03);
+    const x1 = result.w - m;
+    return { x0: x1 - px, x1, y: result.h - m, th, fs };
+  }
+  function scaleBar() { // -> { px, label, x0, x1, y, th, fs } or null when no calibration
+    const u = parseFloat($('umpp').value);
+    if (!result || !(u > 0)) return null;
+    const eff = u * result.srcW / result.workW, len = niceLength(0.2 * result.w * eff), px = len / eff;
+    return { px, label: fmtUm(len), ...scaleBarGeom(px) };
   }
   function redrawResult() {
     if (!result) return;
@@ -534,22 +657,56 @@ async function makeDemo({ rgba, w, h, depth, n }) {
         job.parts = [];
       }
     }
-    else if (d.type === 'error') { job = null; fail(d.message); }
+    else if (d.type === 'error') { job = null; slices.failAll(d.message); fail(d.message); }
     else if (d.type === 'demo') { addFiles(d.files, true); $('goBtn').click(); }
-    else if (d.type === 'slice') {
-      if (!result || d.k !== +$('cmpSel').value) return;
-      put($('cvRef'), d.rgba, d.w, d.h); result.cmpIndex = d.k;
-      $('cmpTag').textContent = `Slice ${d.k + 1}`; $('cmpSel').disabled = false; $('saveRef').disabled = false;
-    }
+    else if (d.type === 'slice') slices.receive(d);
     else if (d.type === 'result') {
       busy = false; setBar(1); result = d; result.names = stackNames; result.cmpIndex = d.refIndex;
-      fillCmpSel();
+      slices.reset(d); fillCmpSel();
       const cores = job ? job.strips.length : 1;
       setStatus(`Done in ${((performance.now() - (job ? job.t0 : 0)) / 1000).toFixed(1)} s on ${cores} core${cores > 1 ? 's' : ''}`);
       draw(); renderStats(); renderFrames(d.motion);
       ['savePng', 'saveJpg', 'saveDepth', 'saveRef'].forEach(id => $(id).disabled = false);
+      Draw.onResult();
     }
   }
+
+  // Aligned slices on demand: the worker warps slice k into the result's frame; bitmaps are kept in a
+  // least-recently-used cache sized to about 600 MB, so flipping between slices is instant after the first visit.
+  const slices = {
+    gen: 0, cache: new Map(), pending: new Map(), budget: 3,
+    reset(d) {
+      this.gen++; this.failAll('A new stack replaced this one.');
+      this.cache.forEach(b => b.close && b.close()); this.cache.clear();
+      this.budget = Math.max(3, Math.floor(600e6 / (d.w * d.h * 4)));
+      createImageBitmap(new ImageData(new Uint8ClampedArray(d.ref), d.w, d.h)).then(b => this.put(d.refIndex, b, this.gen));
+    },
+    has(k) { return this.cache.has(k); },
+    put(k, bm, gen) {
+      if (gen !== this.gen) { bm.close(); return; }
+      this.cache.delete(k); this.cache.set(k, bm);
+      while (this.cache.size > this.budget) { const [k0, b0] = this.cache.entries().next().value; this.cache.delete(k0); b0.close(); }
+    },
+    get(k) {
+      const hit = this.cache.get(k);
+      if (hit) { this.cache.delete(k); this.cache.set(k, hit); return Promise.resolve(hit); }
+      if (this.pending.has(k)) return this.pending.get(k).promise;
+      if (!result || busy) return Promise.reject(new Error('busy'));
+      let res, rej; const promise = new Promise((a, b) => { res = a; rej = b; });
+      this.pending.set(k, { promise, res, rej, gen: this.gen });
+      getWorker().postMessage({ type: 'slice', k, gen: this.gen });
+      return promise;
+    },
+    async receive(d) {
+      const p = this.pending.get(d.k);
+      if (!p || p.gen !== d.gen) return;
+      this.pending.delete(d.k);
+      if (!d.rgba || !result || d.w !== result.w || d.h !== result.h || d.gen !== this.gen) return p.rej(new Error('stale'));
+      const bm = await createImageBitmap(new ImageData(d.rgba, d.w, d.h));
+      this.put(d.k, bm, p.gen); p.res(bm);
+    },
+    failAll(msg) { this.pending.forEach(p => p.rej(new Error(msg))); this.pending.clear(); },
+  };
 
   function put(cv, rgba, w, h) { cv.width = w; cv.height = h; cv.getContext('2d').putImageData(new ImageData(rgba, w, h), 0, 0); }
   function draw() {
@@ -580,6 +737,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
     $('cvResult').hidden = v !== 'result'; $('cvDepth').hidden = v !== 'depth'; $('cmpBox').hidden = v !== 'compare';
     $('cmpRange').hidden = v !== 'compare'; $('cmpBar').hidden = v !== 'compare' || !result; $('legend').hidden = v !== 'depth';
+    $('stage').hidden = v === 'draw'; $('drawBox').hidden = v !== 'draw'; $('zoomBtn').hidden = v === 'draw';
+    if (v === 'draw') Draw.show();
   }
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => setView(b.dataset.view));
   function updateCmp() {
@@ -598,10 +757,18 @@ async function makeDemo({ rgba, w, h, depth, n }) {
     sel.value = result.refIndex; sel.disabled = false;
     $('cmpTag').textContent = `Slice ${result.refIndex + 1}`;
   }
-  $('cmpSel').onchange = () => {
+  $('cmpSel').onchange = async () => {
     if (!result || busy) return;
+    const k = +$('cmpSel').value;
     $('cmpSel').disabled = true; $('saveRef').disabled = true; $('cmpTag').textContent = 'Loading…';
-    getWorker().postMessage({ type: 'slice', k: +$('cmpSel').value });
+    try {
+      const bm = await slices.get(k);
+      if (k === +$('cmpSel').value) {
+        const cv = $('cvRef'); cv.width = bm.width; cv.height = bm.height; cv.getContext('2d').drawImage(bm, 0, 0);
+        result.cmpIndex = k; $('cmpTag').textContent = `Slice ${k + 1}`;
+      }
+    } catch { $('cmpTag').textContent = `Slice ${result.cmpIndex + 1}`; $('cmpSel').value = result.cmpIndex; }
+    $('cmpSel').disabled = false; $('saveRef').disabled = false;
   };
   $('zoomBtn').onclick = () => {
     zoomFull = !zoomFull; const st = $('stage');
@@ -638,6 +805,422 @@ async function makeDemo({ rgba, w, h, depth, n }) {
   };
   $('saveDepth').onclick = () => save('cvDepth', baseName().replace(/_stacked$/, '') + '_depthmap.png', 'image/png');
   if (window.claude && window.claude.use) window.claude.use('downloads').then(d => { downloads = d; }).catch(() => {});
+
+  // ---------- line drawing (camera-lucida tracing) ----------
+  // Lines live in result pixels. Every slice is warped into the result's frame by the worker, so a
+  // drawing stays registered when the background switches between the stack and any slice.
+  const Draw = (() => {
+    const stage = $('dStage'), layer = $('dLayer'), bg = $('cvBg'), ink = $('cvInk'), over = $('dOver');
+    const ictx = ink.getContext('2d'), NS = 'http://www.w3.org/2000/svg';
+    const HINT = $('drawHint').textContent;
+    let W = 0, H = 0, strokes = [], dirty = false, tool = 'pen', color = '#000000', widthTouched = false;
+    const widths = { pen: 3, erase: 12 }; // pen and line share one width, the eraser has its own
+    const wKey = () => tool === 'erase' ? 'erase' : 'pen';
+    const undo = [], redo = [];
+    let vs = 1, tx = 0, ty = 0, fitted = true, minS = 0.05;  // screen = image * vs + (tx, ty)
+    let bgKey = 'result', bgWant = 'result', lastSlice = 0, loading = false, dir = 1, opMem = 100;
+    let resultBm = null, depthBm = null, cur = null, pinch = null, panDrag = null, spaceDown = false, penSeen = false;
+    const pointers = new Map();
+    const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+    const gBar = svgEl('g', {}), prevLine = svgEl('line', { 'stroke-linecap': 'round', visibility: 'hidden' });
+    const curO = svgEl('circle', { fill: 'none', stroke: '#fff', 'stroke-width': 3, 'vector-effect': 'non-scaling-stroke', visibility: 'hidden' });
+    const curI = svgEl('circle', { fill: 'none', stroke: '#000', 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke', visibility: 'hidden' });
+    over.append(gBar, prevLine, curO, curI);
+    const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+    const r2 = v => Math.round(v * 100) / 100;
+
+    // --- geometry shared by the canvas and the SVG export (quadratic curves through segment midpoints)
+    function pathD(p) {
+      const n = p.length / 2;
+      let d = `M${r2(p[0])} ${r2(p[1])}`;
+      for (let i = 1; i < n - 1; i++) d += `Q${r2(p[2 * i])} ${r2(p[2 * i + 1])} ${r2((p[2 * i] + p[2 * i + 2]) / 2)} ${r2((p[2 * i + 1] + p[2 * i + 3]) / 2)}`;
+      return d + `L${r2(p[2 * n - 2])} ${r2(p[2 * n - 1])}`;
+    }
+    function style(g, s) {
+      g.globalCompositeOperation = s.t === 'erase' ? 'destination-out' : 'source-over';
+      g.strokeStyle = g.fillStyle = s.t === 'erase' ? '#000' : s.c; g.lineWidth = s.w; g.lineCap = g.lineJoin = 'round';
+    }
+    function dot(g, s, x, y) { style(g, s); g.beginPath(); g.arc(x, y, s.w / 2, 0, 2 * Math.PI); g.fill(); }
+    function paintFull(g, s) {
+      if (s.p.length === 2) return dot(g, s, s.p[0], s.p[1]);
+      style(g, s); g.stroke(new Path2D(pathD(s.p)));
+    }
+    function paintPiece(s, i) { // the piece of the curve fixed once point i+1 exists
+      const p = s.p, x0 = i === 1 ? p[0] : (p[2 * i - 2] + p[2 * i]) / 2, y0 = i === 1 ? p[1] : (p[2 * i - 1] + p[2 * i + 1]) / 2;
+      style(ictx, s); ictx.beginPath(); ictx.moveTo(x0, y0);
+      ictx.quadraticCurveTo(p[2 * i], p[2 * i + 1], (p[2 * i] + p[2 * i + 2]) / 2, (p[2 * i + 1] + p[2 * i + 3]) / 2); ictx.stroke();
+    }
+    function paintEnd(s) {
+      const p = s.p, n = p.length / 2; if (n < 2) return;
+      const x0 = n === 2 ? p[0] : (p[2 * n - 4] + p[2 * n - 2]) / 2, y0 = n === 2 ? p[1] : (p[2 * n - 3] + p[2 * n - 1]) / 2;
+      style(ictx, s); ictx.beginPath(); ictx.moveTo(x0, y0); ictx.lineTo(p[2 * n - 2], p[2 * n - 1]); ictx.stroke();
+    }
+    function render() {
+      ictx.globalCompositeOperation = 'source-over'; ictx.clearRect(0, 0, W, H);
+      for (const s of strokes) paintFull(ictx, s);
+      ictx.globalCompositeOperation = 'source-over';
+    }
+
+    // --- history (each state is an immutable array of stroke objects)
+    function commit(prev) { undo.push(prev); if (undo.length > 500) undo.shift(); redo.length = 0; dirty = true; buttons(); }
+    function doUndo() { if (cur || !undo.length) return; redo.push(strokes); strokes = undo.pop(); render(); dirty = true; buttons(); }
+    function doRedo() { if (cur || !redo.length) return; undo.push(strokes); strokes = redo.pop(); render(); dirty = true; buttons(); }
+    function buttons() {
+      $('undoBtn').disabled = !undo.length; $('redoBtn').disabled = !redo.length;
+      const none = !W || !strokes.length;
+      ['inkClear', 'inkPng', 'inkSvg', 'inkSave'].forEach(id => $(id).disabled = none);
+      $('inkComp').disabled = !W;
+    }
+
+    // --- view
+    function applyView() {
+      layer.style.transform = `translate(${tx}px, ${ty}px) scale(${vs})`;
+      layer.classList.toggle('px', vs >= 2);
+      $('dHud').textContent = `${vs >= 1 ? Math.round(vs * 100) : +(vs * 100).toPrecision(2)}%`;
+    }
+    function fit() {
+      const r = stage.getBoundingClientRect(); if (!W || !r.width) return;
+      vs = Math.min(r.width / W, r.height / H) * 0.98; minS = Math.min(vs / 4, 0.25);
+      tx = (r.width - W * vs) / 2; ty = (r.height - H * vs) / 2; fitted = true; applyView();
+    }
+    function zoomAt(f, sx, sy) {
+      const ns = clamp(vs * f, minS, 32); if (ns === vs) return;
+      tx = sx - (sx - tx) * ns / vs; ty = sy - (sy - ty) * ns / vs; vs = ns; fitted = false; applyView(); cursorAt();
+    }
+    function zoomCentre(f) { const r = stage.getBoundingClientRect(); zoomAt(f, r.width / 2, r.height / 2); }
+    const local = e => { const r = stage.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    const toImg = e => { const [x, y] = local(e); return [(x - tx) / vs, (y - ty) / vs]; };
+    new ResizeObserver(() => { if (fitted && !$('drawBox').hidden) fit(); }).observe(stage);
+
+    // --- backgrounds
+    const label = k => k === 'result' ? 'Stacked result' : k === 'depth' ? 'Depth map' : `Slice ${k + 1}${result && result.names[k] ? ' · ' + result.names[k] : ''}`;
+    const tag = t => { $('dBgTag').textContent = t; };
+    function bitmapFor(k) { return k === 'result' ? resultBm : k === 'depth' ? depthBm : slices.cache.get(k); }
+    function paintBg(k) {
+      const bm = bitmapFor(k); if (!bm) return false;
+      const g = bg.getContext('2d'); g.clearRect(0, 0, W, H); g.drawImage(bm, 0, 0);
+      bgKey = k; if (typeof k === 'number') lastSlice = k; tag(label(k)); sync(); return true;
+    }
+    function sync() {
+      $('bgSel').value = String(bgWant);
+      if (typeof bgWant === 'number') $('bgFocus').value = bgWant + 1;
+    }
+    function setBg(k) {
+      if (!W) return;
+      if (typeof k === 'number') { if (!result) return; k = clamp(k, 0, result.names.length - 1); if (typeof bgKey === 'number' && k !== bgKey) dir = Math.sign(k - bgKey); }
+      bgWant = k; sync(); pump();
+    }
+    async function pump() {
+      if (loading) return;
+      const want = bgWant;
+      if (typeof want === 'number' && !slices.has(want)) {
+        if (busy) { tag('Stacking in progress, slices are available when it finishes'); return; }
+        loading = true; tag(`Loading slice ${want + 1}…`);
+        try { await slices.get(want); } catch {}
+        loading = false;
+        if (bgWant !== want) return pump();
+        if (!slices.has(want)) { bgWant = bgKey; sync(); tag(label(bgKey) + ' (could not load that slice)'); return; }
+      }
+      paintBg(want);
+      // prefetch the next slice in the direction of travel, so scrubbing through focus feels instant
+      if (typeof want === 'number' && !busy && !slices.pending.size) {
+        const nb = want + dir;
+        if (nb >= 0 && nb < result.names.length && !slices.has(nb)) slices.get(nb).catch(() => {});
+      }
+    }
+    function step(d) { setBg(typeof bgKey === 'number' ? bgKey + d : lastSlice); }
+
+    // --- overlay: scale bar preview, straight-line preview, brush outline
+    function overlay() {
+      gBar.textContent = '';
+      const sb = W && $('inkBar').checked ? scaleBar() : null;
+      if (sb) {
+        gBar.setAttribute('fill', color);
+        gBar.append(svgEl('rect', { x: sb.x0, y: sb.y - sb.th, width: sb.px, height: sb.th }));
+        const t = svgEl('text', { x: (sb.x0 + sb.x1) / 2, y: sb.y - sb.th - sb.fs * 0.25, 'text-anchor': 'middle', 'font-family': 'IBM Plex Sans, Arial, sans-serif', 'font-weight': 600, 'font-size': sb.fs });
+        t.textContent = sb.label; gBar.append(t);
+      }
+    }
+    let lastHover = null;
+    function cursorAt(e) {
+      if (e) lastHover = e;
+      const show = W && lastHover && (tool === 'pen' || tool === 'erase') && !spaceDown && !panDrag && !pinch;
+      [curO, curI].forEach(c => c.setAttribute('visibility', show ? 'visible' : 'hidden'));
+      if (!show) return;
+      const [x, y] = toImg(lastHover), r = Math.max(widths[wKey()] / 2, 0.5 / vs);
+      [curO, curI].forEach(c => { c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', r); });
+    }
+
+    // --- strokes
+    function startStroke(e) {
+      const [x, y] = toImg(e), erasing = tool === 'erase' || (e.pointerType === 'pen' && (e.buttons & 32));
+      if (tool === 'cut' && !erasing) { cur = { id: e.pointerId, kind: 'cut', before: strokes }; cutAt(x, y); return; }
+      if (tool === 'line' && !erasing) {
+        cur = { id: e.pointerId, kind: 'line', x0: x, y0: y, x1: x, y1: y };
+        prevLine.setAttribute('stroke', color); prevLine.setAttribute('stroke-width', widths.pen); linePrev(); return;
+      }
+      const s = { t: erasing ? 'erase' : 'pen', c: color, w: widths[erasing ? 'erase' : 'pen'], p: [x, y] };
+      cur = { id: e.pointerId, kind: 'free', s, sx: x, sy: y };
+      dot(ictx, s, x, y);
+    }
+    function snap(c) {
+      const dx = c.x1 - c.x0, dy = c.y1 - c.y0, L = Math.hypot(dx, dy), a = Math.round(Math.atan2(dy, dx) / (Math.PI / 12)) * Math.PI / 12;
+      c.x1 = c.x0 + L * Math.cos(a); c.y1 = c.y0 + L * Math.sin(a);
+    }
+    function linePrev() {
+      const c = cur; prevLine.setAttribute('visibility', 'visible');
+      prevLine.setAttribute('x1', c.x0); prevLine.setAttribute('y1', c.y0); prevLine.setAttribute('x2', c.x1); prevLine.setAttribute('y2', c.y1);
+    }
+    function extendStroke(e) {
+      let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+      if (!evs.length) evs = [e];
+      const k = +$('steady').value, minStep = Math.max(0.2, 0.75 / vs);
+      for (const ev of evs) {
+        const [rx, ry] = toImg(ev);
+        if (cur.kind === 'line') { cur.x1 = rx; cur.y1 = ry; if (ev.shiftKey) snap(cur); continue; }
+        if (cur.kind === 'cut') { cutAt(rx, ry); continue; }
+        cur.raw = [rx, ry]; cur.sx += (rx - cur.sx) * (1 - k); cur.sy += (ry - cur.sy) * (1 - k);
+        const p = cur.s.p;
+        if (Math.hypot(cur.sx - p[p.length - 2], cur.sy - p[p.length - 1]) < minStep) continue;
+        p.push(cur.sx, cur.sy);
+        if (p.length >= 6) paintPiece(cur.s, p.length / 2 - 2);
+      }
+      if (cur.kind === 'line') linePrev();
+    }
+    function segDist(px, py, ax, ay, bx, by) {
+      const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy, t = L ? clamp(((px - ax) * dx + (py - ay) * dy) / L, 0, 1) : 0;
+      return Math.hypot(px - ax - t * dx, py - ay - t * dy);
+    }
+    function hits(s, x, y, tol) {
+      const p = s.p, r = tol + s.w / 2;
+      if (p.length === 2) return Math.hypot(x - p[0], y - p[1]) <= r;
+      for (let i = 0; i + 3 < p.length; i += 2) if (segDist(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]) <= r) return true;
+      return false;
+    }
+    function cutAt(x, y) {
+      const tol = 6 / vs, keep = strokes.filter(s => s.t !== 'pen' || !hits(s, x, y, tol));
+      if (keep.length !== strokes.length) { strokes = keep; render(); }
+    }
+    function endStroke() {
+      const c = cur; cur = null;
+      if (c.kind === 'free') {
+        // the steadiness filter trails the pointer; finish the stroke where the pointer was released
+        const p = c.s.p;
+        if (c.raw && Math.hypot(c.raw[0] - p[p.length - 2], c.raw[1] - p[p.length - 1]) > 0.5) { p.push(c.raw[0], c.raw[1]); if (p.length >= 6) paintPiece(c.s, p.length / 2 - 2); }
+        paintEnd(c.s); const prev = strokes; strokes = strokes.concat([c.s]); commit(prev); }
+      else if (c.kind === 'line') {
+        prevLine.setAttribute('visibility', 'hidden');
+        const s = { t: 'pen', c: color, w: widths.pen, p: Math.hypot(c.x1 - c.x0, c.y1 - c.y0) > 0.01 ? [c.x0, c.y0, c.x1, c.y1] : [c.x0, c.y0] };
+        paintFull(ictx, s); ictx.globalCompositeOperation = 'source-over';
+        const prev = strokes; strokes = strokes.concat([s]); commit(prev);
+      } else if (c.kind === 'cut' && strokes !== c.before) commit(c.before);
+    }
+    function cancelStroke() {
+      if (!cur) return;
+      if (cur.kind === 'cut') strokes = cur.before;
+      prevLine.setAttribute('visibility', 'hidden'); cur = null; render();
+    }
+
+    // --- pointer input: mouse/pen/one finger draws; two fingers, Space, middle button or the Pan tool move the view
+    stage.addEventListener('pointerdown', e => {
+      if (!W) return;
+      stage.focus({ preventScroll: true });
+      if (e.pointerType === 'pen') penSeen = true;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+      try { stage.setPointerCapture(e.pointerId); } catch {}
+      const touches = [...pointers.values()].filter(p => p.type === 'touch');
+      if (e.pointerType === 'touch' && touches.length >= 2) {
+        cancelStroke(); panDrag = null;
+        const [a, b] = touches, r = stage.getBoundingClientRect();
+        pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, ix: ((a.x + b.x) / 2 - r.left - tx) / vs, iy: ((a.y + b.y) / 2 - r.top - ty) / vs, s0: vs };
+        cursorAt(); return;
+      }
+      if (cur || pinch) return;
+      if (e.button === 1 || tool === 'pan' || spaceDown || (e.pointerType === 'touch' && penSeen)) {
+        e.preventDefault();
+        panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, tx, ty }; stage.classList.add('panning'); cursorAt(); return;
+      }
+      if (e.button !== 0 && !(e.pointerType === 'pen' && (e.buttons & 32))) return;
+      startStroke(e);
+    });
+    stage.addEventListener('pointermove', e => {
+      cursorAt(e);
+      const pt = pointers.get(e.pointerId); if (!pt) return;
+      pt.x = e.clientX; pt.y = e.clientY;
+      if (pinch) {
+        const [a, b] = [...pointers.values()].filter(p => p.type === 'touch'); if (!b) return;
+        const r = stage.getBoundingClientRect();
+        vs = clamp(pinch.s0 * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0, minS, 32);
+        tx = (a.x + b.x) / 2 - r.left - pinch.ix * vs; ty = (a.y + b.y) / 2 - r.top - pinch.iy * vs; fitted = false; applyView(); return;
+      }
+      if (panDrag && panDrag.id === e.pointerId) { tx = panDrag.tx + e.clientX - panDrag.x; ty = panDrag.ty + e.clientY - panDrag.y; fitted = false; applyView(); return; }
+      if (cur && cur.id === e.pointerId) extendStroke(e);
+    });
+    function up(e) {
+      if (!pointers.delete(e.pointerId)) return;
+      if (pinch) { if ([...pointers.values()].filter(p => p.type === 'touch').length < 2) pinch = null; return; }
+      if (panDrag && panDrag.id === e.pointerId) { panDrag = null; stage.classList.remove('panning'); }
+      if (cur && cur.id === e.pointerId) { if (e.type === 'pointercancel') cancelStroke(); else endStroke(); }
+      cursorAt();
+    }
+    stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
+    stage.addEventListener('pointerleave', () => { lastHover = null; cursorAt(); });
+    stage.addEventListener('contextmenu', e => e.preventDefault());
+    stage.addEventListener('wheel', e => {
+      if (!W) return; e.preventDefault();
+      const unit = e.deltaMode === 1 ? 0.05 : e.deltaMode === 2 ? 1 : (e.ctrlKey ? 0.01 : 0.0015);
+      const [x, y] = local(e); zoomAt(Math.exp(-e.deltaY * unit), x, y);
+    }, { passive: false });
+
+    // --- controls
+    function setTool(t) {
+      tool = t;
+      document.querySelectorAll('#toolSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
+      stage.classList.toggle('pan', t === 'pan'); showW(); cursorAt();
+    }
+    document.querySelectorAll('#toolSeg button').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+    function setColor(c, fromPicker) {
+      color = c; if (!fromPicker) $('penC').value = c;
+      document.querySelectorAll('#swatches .sw').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.c === c)));
+      overlay();
+    }
+    document.querySelectorAll('#swatches .sw').forEach(b => b.onclick = () => setColor(b.dataset.c));
+    $('penC').oninput = e => setColor(e.target.value, true);
+    function showW() {
+      const k = wKey(), el = $('penW');
+      if (+el.max < widths[k]) el.max = Math.ceil(widths[k]);
+      el.value = widths[k]; $('penWVal').textContent = `${widths[k]} px`;
+      document.querySelector('label[for=penW]').textContent = k === 'erase' ? 'Eraser size' : 'Width';
+    }
+    $('penW').oninput = e => { widthTouched = true; widths[wKey()] = +e.target.value; $('penWVal').textContent = `${widths[wKey()]} px`; cursorAt(); };
+    $('steady').oninput = e => { $('steadyVal').textContent = (+e.target.value).toFixed(2); };
+    $('undoBtn').onclick = doUndo; $('redoBtn').onclick = doRedo;
+    $('inkClear').onclick = () => { if (!strokes.length) return; const prev = strokes; strokes = []; render(); commit(prev); };
+    $('bgSel').onchange = e => { const v = e.target.value; setBg(v === 'result' || v === 'depth' ? v : +v); };
+    $('bgFocus').oninput = e => setBg(+e.target.value - 1);
+    $('bgPrev').onclick = () => step(-1); $('bgNext').onclick = () => step(1);
+    const setOp = v => { $('bgOp').value = v; $('bgOpVal').textContent = v + '%'; bg.style.opacity = v / 100; };
+    $('bgOp').oninput = e => setOp(+e.target.value);
+    $('zIn').onclick = () => zoomCentre(1.5); $('zOut').onclick = () => zoomCentre(1 / 1.5); $('zFit').onclick = fit;
+    $('z11').onclick = () => { const r = stage.getBoundingClientRect(); zoomAt(1 / vs, r.width / 2, r.height / 2); };
+    $('inkBar').onchange = () => { store.set('fs.inkBar', $('inkBar').checked ? '1' : '0'); overlay(); };
+    if (store.get('fs.inkBar') === '0') $('inkBar').checked = false;
+
+    document.addEventListener('keydown', e => {
+      if (view !== 'draw' || !W) return;
+      const t = e.target;
+      if (t && t.matches && t.matches('input:not([type=range]):not([type=checkbox]), select, textarea')) return;
+      const k = e.key, mod = e.ctrlKey || e.metaKey;
+      if (mod && (k === 'z' || k === 'Z')) { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
+      if (mod && (k === 'y' || k === 'Y')) { e.preventDefault(); doRedo(); return; }
+      if (mod || e.altKey) return;
+      if (k === ' ') { if (t === stage || t === document.body) e.preventDefault(); if (!spaceDown) { spaceDown = true; stage.classList.add('pan'); cursorAt(); } return; }
+      const act = { b: () => setTool('pen'), l: () => setTool('line'), e: () => setTool('erase'), x: () => setTool('cut'), h: () => setTool('pan'),
+        '[': () => step(-1), ',': () => step(-1), ']': () => step(1), '.': () => step(1),
+        s: () => setBg(bgKey === 'result' ? lastSlice : 'result'), d: () => setBg('depth'),
+        o: () => { const v = +$('bgOp').value; if (v > 0) { opMem = v; setOp(0); } else setOp(opMem || 100); },
+        '0': fit, '1': () => $('z11').click(), '+': () => zoomCentre(1.5), '=': () => zoomCentre(1.5), '-': () => zoomCentre(1 / 1.5) }[k.toLowerCase()];
+      if (act) { e.preventDefault(); act(); }
+    });
+    document.addEventListener('keyup', e => { if (e.key === ' ' && spaceDown) { spaceDown = false; if (tool !== 'pan') stage.classList.remove('pan'); cursorAt(); } });
+    window.addEventListener('blur', () => { spaceDown = false; if (tool !== 'pan') stage.classList.remove('pan'); });
+    window.addEventListener('beforeunload', e => { if (dirty && strokes.length) { e.preventDefault(); e.returnValue = ''; } });
+
+    // --- export
+    const drawName = () => baseName().replace(/_stacked$/, '') + '_drawing';
+    const bgName = k => k === 'result' ? 'stack' : k === 'depth' ? 'depthmap' : 'slice' + (k + 1);
+    function barOnCanvas(g) {
+      const sb = $('inkBar').checked ? scaleBar() : null; if (!sb) return;
+      g.save(); g.globalCompositeOperation = 'source-over'; g.fillStyle = color;
+      g.fillRect(sb.x0, sb.y - sb.th, sb.px, sb.th);
+      g.font = `600 ${sb.fs}px "IBM Plex Sans", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+      g.fillText(sb.label, (sb.x0 + sb.x1) / 2, sb.y - sb.th - sb.fs * 0.25); g.restore();
+    }
+    async function saveCanvas(c, name) {
+      const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+      if (!blob) return setStatus('Could not encode the image.', true);
+      await saveBlob(blob, name);
+    }
+    function flat(withBg) {
+      const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
+      if (withBg) { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.globalAlpha = +$('bgOp').value / 100; g.drawImage(bg, 0, 0); g.globalAlpha = 1; }
+      g.drawImage(ink, 0, 0); barOnCanvas(g); return c;
+    }
+    const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    function toSVG() {
+      let body = '', defs = '', m = 0;
+      const el = (s, c) => s.p.length === 2 ? `<circle cx="${r2(s.p[0])}" cy="${r2(s.p[1])}" r="${r2(s.w / 2)}" fill="${c}"/>`
+        : `<path d="${pathD(s.p)}" fill="none" stroke="${c}" stroke-width="${r2(s.w)}"/>`;
+      for (const s of strokes) {
+        if (s.t === 'pen') { body += '\n  ' + el(s, s.c); continue; }
+        // an eraser stroke hides everything drawn before it: wrap the earlier content in a mask
+        const id = 'erase' + (++m);
+        defs += `\n  <mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#fff"/>${el(s, '#000')}</mask>`;
+        body = `\n  <g mask="url(#${id})">${body}\n  </g>`;
+      }
+      const sb = $('inkBar').checked ? scaleBar() : null, u = parseFloat($('umpp').value);
+      const bar = sb ? `\n<g id="scale-bar" fill="${color}"><rect x="${r2(sb.x0)}" y="${r2(sb.y - sb.th)}" width="${r2(sb.px)}" height="${sb.th}"/><text x="${r2((sb.x0 + sb.x1) / 2)}" y="${r2(sb.y - sb.th - sb.fs * 0.25)}" text-anchor="middle" font-family="IBM Plex Sans, Arial, sans-serif" font-weight="600" font-size="${sb.fs}">${esc(sb.label)}</text></g>` : '';
+      const desc = `Traced in Focus Stacker over a ${W}×${H} px stack of ${result.names.length} slices.` + (u > 0 ? ` Calibration: ${r2(u * result.srcW / result.workW * 1000) / 1000} µm per pixel.` : '');
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">\n<desc>${esc(desc)}</desc>` +
+        (defs ? `\n<defs>${defs}\n</defs>` : '') + `\n<g id="drawing" stroke-linecap="round" stroke-linejoin="round">${body}\n</g>${bar}\n</svg>\n`;
+    }
+    $('inkPng').onclick = async () => { await saveCanvas(flat(false), drawName() + '.png'); dirty = false; };
+    $('inkComp').onclick = () => saveCanvas(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`);
+    $('inkSvg').onclick = async () => { await saveBlob(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg'); dirty = false; };
+    $('inkSave').onclick = async () => {
+      const u = parseFloat($('umpp').value);
+      const doc = { format: 'focus-stacker-drawing', version: 1, width: W, height: H, umPerPixel: u > 0 ? u * result.srcW / result.workW : null,
+        slices: result.names, strokes: strokes.map(s => ({ t: s.t, c: s.c, w: s.w, p: s.p.map(r2) })) };
+      await saveBlob(new Blob([JSON.stringify(doc)], { type: 'application/json' }), drawName() + '.json'); dirty = false;
+    };
+    $('inkOpen').onclick = () => $('inkFile').click();
+    $('inkFile').onchange = async e => {
+      const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      try {
+        const doc = JSON.parse(await f.text());
+        if (!doc || doc.format !== 'focus-stacker-drawing' || !Array.isArray(doc.strokes)) throw new Error('not a Focus Stacker drawing');
+        if (!W) throw new Error('stack some photos first');
+        const sx = W / doc.width, sy = H / doc.height, sameShape = Math.abs(sx / sy - 1) < 0.01;
+        const f2 = sameShape ? sx : 1;
+        const loaded = doc.strokes.filter(s => s && Array.isArray(s.p) && s.p.length >= 2 && s.p.length % 2 === 0 && s.p.every(Number.isFinite))
+          .map(s => ({ t: s.t === 'erase' ? 'erase' : 'pen', c: /^#[0-9a-f]{6}$/i.test(s.c) ? s.c : '#000000', w: Math.max(0.1, +s.w || 1) * f2, p: s.p.map(v => v * f2) }));
+        const prev = strokes; strokes = loaded; render(); commit(prev); dirty = false;
+        warn(sameShape ? (Math.abs(sx - 1) > 1e-6 ? `Drawing was made at ${doc.width}×${doc.height} px and has been scaled to ${W}×${H}.` : '')
+          : `Drawing was made at ${doc.width}×${doc.height} px, which does not match this result (${W}×${H}); it may not line up.`);
+        setStatus(`Opened ${f.name} (${loaded.length} strokes)`);
+      } catch (err) { setStatus('Could not open that drawing: ' + (err.message || err), true); }
+    };
+    function warn(t) { const h = $('drawHint'); h.textContent = t || HINT; h.classList.toggle('warn', !!t); }
+
+    return {
+      async onResult() {
+        const nw = result.w, nh = result.h, resized = W && (nw !== W || nh !== H);
+        W = nw; H = nh;
+        for (const c of [ink, bg]) { c.width = W; c.height = H; }
+        layer.style.width = W + 'px'; layer.style.height = H + 'px'; over.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        $('dEmpty').hidden = true;
+        warn(resized && strokes.length ? `The new result is ${W}×${H} px, a different size from the one you drew on, so the drawing may not line up. Undo or Clear if needed.` : '');
+        if (resultBm) resultBm.close(); if (depthBm) depthBm.close();
+        [resultBm, depthBm] = await Promise.all([createImageBitmap(new ImageData(new Uint8ClampedArray(result.rgba), W, H)), createImageBitmap(new ImageData(new Uint8ClampedArray(result.depth), W, H))]);
+        const n = result.names.length, sel = $('bgSel'); sel.textContent = '';
+        [['result', 'Stacked result'], ['depth', 'Depth map']].concat(result.names.map((_, k) => [k, label(k)])).forEach(([v, t]) => {
+          const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o);
+        });
+        $('bgFocus').max = n; lastSlice = result.refIndex; $('bgFocus').value = lastSlice + 1;
+        const big = Math.max(W, H);
+        $('penW').max = Math.max(20, Math.round(big / 60));
+        if (!widthTouched) { widths.pen = Math.max(1, Math.round(big / 250) / 2); widths.erase = Math.min(+$('penW').max, widths.pen * 6); }
+        showW();
+        const keep = typeof bgKey === 'number' && bgKey >= n ? 'result' : bgKey;
+        bgWant = 'result'; paintBg('result');
+        if (keep !== 'result') setBg(keep); // slices were re-warped for the new stack, so reload
+        render(); overlay(); buttons();
+        if (fitted || resized) requestAnimationFrame(fit); else applyView();
+      },
+      show() { if (W) requestAnimationFrame(() => { if (fitted) fit(); else applyView(); }); },
+      overlay,
+    };
+  })();
 
   // sample stack: draw an all-in-focus test target with a known depth layout, then defocus it in the worker
   function makeSample() {
