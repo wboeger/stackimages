@@ -230,6 +230,7 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
           <button class="btn" id="savePng" type="button" disabled>Save PNG</button>
           <button class="btn" id="saveJpg" type="button" disabled>Save JPEG</button>
           <button class="btn" id="saveDepth" type="button" disabled>Save depth map</button>
+          <button class="btn" id="shareRes" type="button" disabled title="Open the share sheet to send the stacked result (PNG) to another app">Share…</button>
           <button class="btn" id="saveRef" type="button" disabled title="The slice shown in Compare, aligned and cropped exactly like the result">Save compared slice</button>
         </div>
       </div>
@@ -327,6 +328,18 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
             <button class="btn" id="inkPng" type="button" disabled title="Lines only, transparent background, same pixel size as the result">Save drawing PNG</button>
             <button class="btn" id="inkSvg" type="button" disabled title="Vector lines for Inkscape, Illustrator or a journal figure">Save drawing SVG</button>
             <button class="btn" id="inkComp" type="button" disabled title="The current background (at the current fade) with the drawing on top">Save drawing on background</button>
+            <button class="btn" id="inkPsd" type="button" disabled title="Photoshop file with the background and the drawing as separate layers (opens in Fresco, Photoshop, Affinity, Procreate)">Save layered PSD</button>
+          </div>
+          <div class="grp">
+            <label for="shareWhat">Send to app</label>
+            <select id="shareWhat" title="What the Share button sends">
+              <option value="psd">Layered PSD (Fresco, Photoshop)</option>
+              <option value="comp">Drawing on background (PNG)</option>
+              <option value="ink">Drawing only, transparent (PNG)</option>
+              <option value="layers">Background + drawing (2 PNGs)</option>
+              <option value="svg">Drawing as vectors (SVG)</option>
+            </select>
+            <button class="btn" id="inkShare" type="button" disabled title="Open the share sheet to send the file to another app (on iPad: Fresco, Photoshop, Photos, Files…)">Share…</button>
           </div>
           <div class="grp">
             <button class="btn" id="inkSave" type="button" disabled title="Editable drawing, to continue later on the same stack">Save editable</button>
@@ -500,6 +513,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
 </script>
 
 <script>
+/*PSD*/
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -672,7 +686,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       const cores = job ? job.strips.length : 1;
       setStatus(`Done in ${((performance.now() - (job ? job.t0 : 0)) / 1000).toFixed(1)} s on ${cores} core${cores > 1 ? 's' : ''}`);
       draw(); renderStats(); renderFrames(d.motion);
-      ['savePng', 'saveJpg', 'saveDepth', 'saveRef'].forEach(id => $(id).disabled = false);
+      ['savePng', 'saveJpg', 'saveDepth', 'saveRef', 'shareRes'].forEach(id => $(id).disabled = false);
       Draw.onResult();
     }
   }
@@ -802,6 +816,42 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
   }
+  // sharing to other apps (Web Share API level 2: iOS/iPadOS share sheet, Android, Windows, macOS)
+  // Safari only lets navigator.share() run shortly after a tap. Encoding a large stack can take longer than that,
+  // so when the share is refused for lack of a tap, the prepared files are kept and the next tap shares them at once.
+  let ready = null; // { key, files, title, btn, label }
+  const canShareFiles = files => { try { return !!(navigator.share && navigator.canShare && navigator.canShare({ files })); } catch { return false; } };
+  function shareOrSave(files, title, btn, key) {
+    if (!files.length) return;
+    if (!canShareFiles(files)) {
+      // e.g. desktop Firefox, an embedded preview, or a file type the browser will not share: save instead
+      setStatus('This browser cannot share these files, so they were saved instead' + (files.length > 1 ? ` (${files.length} files)` : '') + '.');
+      return (async () => { for (const f of files) await saveBlob(f, f.name); })();
+    }
+    return navigator.share({ files, title }).then(() => { setStatus('Shared ' + files.map(f => f.name).join(', ')); clearReady(); }, e => {
+      if (e && e.name === 'AbortError') { setStatus('Share cancelled.'); clearReady(); return; }
+      if (e && e.name === 'NotAllowedError' && !(ready && ready.key === key)) {
+        clearReady(); ready = { key, files, title, btn, label: btn.textContent }; btn.textContent = 'Ready: tap to share';
+        setStatus('The file is ready. Tap “Ready: tap to share” to open the share sheet.'); return;
+      }
+      clearReady();
+      setStatus('Sharing was refused here (' + ((e && e.name) || 'error') + '), so the file was saved instead.');
+      return (async () => { for (const f of files) await saveBlob(f, f.name); })();
+    });
+  }
+  function clearReady() { if (ready) { ready.btn.textContent = ready.label; ready = null; } }
+  // returns true if a prepared share for this key was sent synchronously inside the tap
+  function shareReady(key) { if (ready && ready.key === key) { const r = ready; shareOrSave(r.files, r.title, r.btn, key); return true; } clearReady(); return false; }
+  const toFile = (blob, name) => new File([blob], name, { type: blob.type });
+  const canvasFile = async (c, name, type, q) => { const b = await new Promise(r => c.toBlob(r, type || 'image/png', q)); if (!b) throw new Error('could not encode the image'); return toFile(b, name); };
+  $('shareRes').onclick = async () => {
+    const btn = $('shareRes'), key = ['result', runId, $('umpp').value, result && result.w].join('|');
+    if (shareReady(key)) return;
+    btn.disabled = true; setStatus('Preparing the image…');
+    try { await shareOrSave([await canvasFile($('cvResult'), baseName() + '.png')], baseName(), btn, key); }
+    catch (e) { setStatus('Could not share: ' + (e.message || e), true); }
+    finally { btn.disabled = !result; }
+  };
   $('savePng').onclick = () => save('cvResult', baseName() + '.png', 'image/png');
   $('saveJpg').onclick = () => save('cvResult', baseName() + '.jpg', 'image/jpeg', 0.95);
   $('saveRef').onclick = () => {
@@ -932,7 +982,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       $('undoBtn').disabled = !undo.length; $('redoBtn').disabled = !redo.length;
       const none = !W || !strokes.length;
       ['inkClear', 'inkPng', 'inkSvg', 'inkSave'].forEach(id => $(id).disabled = none);
-      $('inkComp').disabled = !W;
+      $('inkComp').disabled = $('inkPsd').disabled = !W;
+      const w = $('shareWhat').value; $('inkShare').disabled = !W || (none && (w === 'ink' || w === 'svg'));
     }
 
     // --- view
@@ -1285,6 +1336,49 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">\n<desc>${esc(desc)}</desc>` +
         (defs ? `\n<defs>${defs}\n</defs>` : '') + `\n<g id="drawing" stroke-linecap="round" stroke-linejoin="round">${body}\n</g>${bar}\n</svg>\n`;
     }
+    // layered Photoshop file: [white paper if the background is faded] + background + drawing [+ scale bar]
+    function layerPixels(draw) {
+      const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d', { willReadFrequently: true });
+      draw(g); return g.getImageData(0, 0, W, H).data;
+    }
+    function buildPSD() {
+      const fade = +$('bgOp').value / 100, layers = [];
+      if (fade < 1) layers.push({ name: 'Paper', rgba: layerPixels(g => { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }) });
+      layers.push({ name: label(bgKey), rgba: layerPixels(g => g.drawImage(bg, 0, 0)), opacity: fade });
+      layers.push({ name: 'Drawing', rgba: ink.getContext('2d').getImageData(0, 0, W, H).data });
+      if ($('inkBar').checked && scaleBar()) layers.push({ name: 'Scale bar', rgba: layerPixels(barOnCanvas) });
+      const comp = flat(true).getContext('2d').getImageData(0, 0, W, H).data;
+      return new Blob(PSD.encodePSD(W, H, layers, comp), { type: 'image/vnd.adobe.photoshop' });
+    }
+    const psdName = () => `${drawName()}_on_${bgName(bgKey)}.psd`;
+    $('inkPsd').onclick = async () => {
+      setStatus('Writing the PSD…'); await new Promise(r => setTimeout(r, 30));
+      try { await saveBlob(buildPSD(), psdName()); dirty = false; } catch (e) { setStatus('Could not write the PSD: ' + (e.message || e), true); }
+    };
+    async function shareFilesFor(what) {
+      const png = (c, n) => canvasFile(c, n);
+      if (what === 'psd') {
+        // some browsers only share a fixed list of file types; try the Photoshop type, then a generic one
+        const b = buildPSD(), f = toFile(b, psdName());
+        return canShareFiles([f]) ? [f] : [new File([b], psdName(), { type: 'application/octet-stream' })];
+      }
+      if (what === 'comp') return [await png(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`)];
+      if (what === 'ink') return [await png(flat(false), drawName() + '.png')];
+      if (what === 'svg') return [toFile(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg')];
+      // two same-size PNGs: background first, so an app that stacks imports in order puts the lines on top
+      const c = document.createElement('canvas'); c.width = W; c.height = H; c.getContext('2d').drawImage(bg, 0, 0);
+      return [await png(c, `${baseName().replace(/_stacked$/, '')}_${bgName(bgKey)}.png`), await png(flat(false), drawName() + '.png')];
+    }
+    const shareKey = () => [$('shareWhat').value, bgKey, $('bgOp').value, $('inkBar').checked, strokes.length, undo.length, redo.length, W, H].join('|');
+    $('inkShare').onclick = async () => {
+      const btn = $('inkShare'), key = shareKey(), what = $('shareWhat').value;
+      if (shareReady(key)) return;
+      btn.disabled = true; setStatus('Preparing the file…'); await new Promise(r => setTimeout(r, 30));
+      try { await shareOrSave(await shareFilesFor(what), drawName(), btn, key); if (what !== 'layers' || strokes.length) dirty = false; }
+      catch (e) { setStatus('Could not share: ' + (e.message || e), true); }
+      finally { buttons(); }
+    };
+    $('shareWhat').onchange = () => { clearReady(); buttons(); };
     $('inkPng').onclick = async () => { await saveCanvas(flat(false), drawName() + '.png'); dirty = false; };
     $('inkComp').onclick = () => saveCanvas(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`);
     $('inkSvg').onclick = async () => { await saveBlob(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg'); dirty = false; };

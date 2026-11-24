@@ -238,6 +238,7 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
           <button class="btn" id="savePng" type="button" disabled>Save PNG</button>
           <button class="btn" id="saveJpg" type="button" disabled>Save JPEG</button>
           <button class="btn" id="saveDepth" type="button" disabled>Save depth map</button>
+          <button class="btn" id="shareRes" type="button" disabled title="Open the share sheet to send the stacked result (PNG) to another app">Share…</button>
           <button class="btn" id="saveRef" type="button" disabled title="The slice shown in Compare, aligned and cropped exactly like the result">Save compared slice</button>
         </div>
       </div>
@@ -335,6 +336,18 @@ input[type=color] { width: 30px; height: 26px; padding: 0 2px; border: 1px solid
             <button class="btn" id="inkPng" type="button" disabled title="Lines only, transparent background, same pixel size as the result">Save drawing PNG</button>
             <button class="btn" id="inkSvg" type="button" disabled title="Vector lines for Inkscape, Illustrator or a journal figure">Save drawing SVG</button>
             <button class="btn" id="inkComp" type="button" disabled title="The current background (at the current fade) with the drawing on top">Save drawing on background</button>
+            <button class="btn" id="inkPsd" type="button" disabled title="Photoshop file with the background and the drawing as separate layers (opens in Fresco, Photoshop, Affinity, Procreate)">Save layered PSD</button>
+          </div>
+          <div class="grp">
+            <label for="shareWhat">Send to app</label>
+            <select id="shareWhat" title="What the Share button sends">
+              <option value="psd">Layered PSD (Fresco, Photoshop)</option>
+              <option value="comp">Drawing on background (PNG)</option>
+              <option value="ink">Drawing only, transparent (PNG)</option>
+              <option value="layers">Background + drawing (2 PNGs)</option>
+              <option value="svg">Drawing as vectors (SVG)</option>
+            </select>
+            <button class="btn" id="inkShare" type="button" disabled title="Open the share sheet to send the file to another app (on iPad: Fresco, Photoshop, Photos, Files…)">Share…</button>
           </div>
           <div class="grp">
             <button class="btn" id="inkSave" type="button" disabled title="Editable drawing, to continue later on the same stack">Save editable</button>
@@ -977,6 +990,121 @@ async function makeDemo({ rgba, w, h, depth, n }) {
 </script>
 
 <script>
+/* Minimal layered Photoshop (PSD, version 1) writer: 8-bit RGB, PackBits (RLE) compressed.
+ * Enough for Adobe Fresco, Photoshop (desktop and iPad), Affinity, Procreate, Krita and GIMP
+ * to open the stack and the drawing as separate layers. No DOM; runs under Node for the tests.
+ *
+ * encodePSD(width, height, layers, composite) -> array of Uint8Array chunks (pass to new Blob()).
+ *   layers:    bottom first; each { name, rgba (Uint8ClampedArray w*h*4, straight alpha),
+ *              opacity (0..1, default 1), hidden (bool) }
+ *   composite: flattened image as RGBA (alpha ignored), what a viewer without layer support shows. */
+'use strict';
+const PSD = (() => {
+  // PackBits one row of `n` bytes taken from src with a stride (to read one channel out of RGBA).
+  function packRow(src, off, stride, n, out) {
+    let o = 0, i = 0;
+    const at = k => src[off + k * stride];
+    while (i < n) {
+      let r = 1; // run length of equal bytes starting at i
+      while (i + r < n && r < 128 && at(i + r) === at(i)) r++;
+      if (r >= 2) { out[o++] = 257 - r; out[o++] = at(i); i += r; continue; }
+      // literal run: stop before the next run of 2+ equal bytes (a run of 2 inside literals is not worth breaking for, 3+ is)
+      let L = 1;
+      while (i + L < n && L < 128) {
+        if (i + L + 2 < n && at(i + L) === at(i + L + 1) && at(i + L) === at(i + L + 2)) break;
+        L++;
+      }
+      out[o++] = L - 1;
+      for (let k = 0; k < L; k++) out[o++] = at(i + k);
+      i += L;
+    }
+    return o;
+  }
+  // One channel (stride-4 view of an RGBA buffer) as RLE: { counts: u16 per row, parts, total bytes }
+  function rleChannel(rgba, c, w, h) {
+    const tmp = new Uint8Array(w + Math.ceil(w / 128) + 2), counts = new Uint16Array(h), parts = [];
+    let total = 0;
+    for (let y = 0; y < h; y++) {
+      const n = packRow(rgba, y * w * 4 + c, 4, w, tmp);
+      counts[y] = n; parts.push(tmp.slice(0, n)); total += n;
+    }
+    return { counts, parts, total };
+  }
+  class Writer {
+    constructor() { this.chunks = []; this.buf = new DataView(new ArrayBuffer(1 << 16)); this.n = 0; this.size = 0; }
+    flush() { if (this.n) { this.chunks.push(new Uint8Array(this.buf.buffer.slice(0, this.n))); this.size += this.n; this.n = 0; } }
+    room(k) { if (this.n + k > this.buf.byteLength) this.flush(); }
+    u8(v) { this.room(1); this.buf.setUint8(this.n, v); this.n += 1; }
+    u16(v) { this.room(2); this.buf.setUint16(this.n, v); this.n += 2; }
+    i16(v) { this.room(2); this.buf.setInt16(this.n, v); this.n += 2; }
+    u32(v) { this.room(4); this.buf.setUint32(this.n, v); this.n += 4; }
+    i32(v) { this.room(4); this.buf.setInt32(this.n, v); this.n += 4; }
+    ascii(s) { for (let i = 0; i < s.length; i++) this.u8(s.charCodeAt(i) & 0x7f); }
+    bytes(a) { this.flush(); this.chunks.push(a); this.size += a.length; }
+    get pos() { return this.size + this.n; }
+    done() { this.flush(); return this.chunks; }
+  }
+  // ASCII Pascal-string name (Photoshop pads it to a multiple of 4) plus the Unicode 'luni' block for the real name.
+  function nameBlocks(name) {
+    const ascii = name.replace(/[^\x20-\x7e]/g, '_').slice(0, 255);
+    const pas = 1 + ascii.length, padPas = (4 - pas % 4) % 4;
+    const raw = 4 + 2 * name.length, padUni = (4 - raw % 4) % 4; // 'luni' data padded to 4
+    return { ascii, padPas, uniLen: raw + padUni, padUni, bytes: pas + padPas + 12 + raw + padUni };
+  }
+
+  function encodePSD(w, h, layers, composite) {
+    if (!(w > 0 && h > 0 && w <= 30000 && h <= 30000)) throw new Error('PSD size must be 1–30000 px per side');
+    const W = new Writer();
+    // header
+    W.ascii('8BPS'); W.u16(1); for (let i = 0; i < 6; i++) W.u8(0);
+    W.u16(3); W.u32(h); W.u32(w); W.u16(8); W.u16(3); // 3 channels, 8 bit, RGB
+    W.u32(0); // colour mode data
+    W.u32(0); // image resources
+    // channel data first, so record lengths are known
+    const enc = layers.map(L => {
+      const ch = [-1, 0, 1, 2].map(id => ({ id, r: rleChannel(L.rgba, id < 0 ? 3 : id, w, h) }));
+      return { L, ch, nm: nameBlocks(L.name || 'Layer') };
+    });
+    let recBytes = 0, dataBytes = 0;
+    for (const e of enc) {
+      recBytes += 16 + 2 + e.ch.length * 6 + 12 + 4 + (8 + e.nm.bytes);
+      for (const c of e.ch) dataBytes += 2 + 2 * h + c.r.total;
+    }
+    let liLen = 2 + recBytes + dataBytes; const liPad = liLen % 2; liLen += liPad;
+    W.u32(4 + liLen + 4); // layer and mask information section
+    W.u32(liLen);
+    W.i16(enc.length);
+    for (const e of enc) {
+      W.i32(0); W.i32(0); W.i32(h); W.i32(w); // top, left, bottom, right
+      W.u16(e.ch.length);
+      for (const c of e.ch) { W.i16(c.id); W.u32(2 + 2 * h + c.r.total); }
+      W.ascii('8BIM'); W.ascii('norm');
+      W.u8(Math.round(255 * Math.min(1, Math.max(0, e.L.opacity == null ? 1 : e.L.opacity))));
+      W.u8(0); W.u8(e.L.hidden ? 2 : 0); W.u8(0); // clipping, flags (bit 1 = hidden), filler
+      W.u32(4 + 4 + e.nm.bytes); // extra data
+      W.u32(0); W.u32(0); // no layer mask, no blending ranges
+      W.u8(e.nm.ascii.length); W.ascii(e.nm.ascii); for (let i = 0; i < e.nm.padPas; i++) W.u8(0);
+      W.ascii('8BIM'); W.ascii('luni'); W.u32(e.nm.uniLen);
+      const nmU = e.L.name || 'Layer'; W.u32(nmU.length); for (let i = 0; i < nmU.length; i++) W.u16(nmU.charCodeAt(i));
+      for (let i = 0; i < e.nm.padUni; i++) W.u8(0);
+    }
+    for (const e of enc) for (const c of e.ch) {
+      W.u16(1); for (let y = 0; y < h; y++) W.u16(c.r.counts[y]);
+      for (const p of c.r.parts) W.bytes(p);
+    }
+    if (liPad) W.u8(0);
+    W.u32(0); // global layer mask info
+    // merged composite, RLE
+    const cc = [0, 1, 2].map(c => rleChannel(composite, c, w, h));
+    W.u16(1);
+    for (const r of cc) for (let y = 0; y < h; y++) W.u16(r.counts[y]);
+    for (const r of cc) for (const p of r.parts) W.bytes(p);
+    return W.done();
+  }
+  return { encodePSD, packRow };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = PSD;
+
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -1149,7 +1277,7 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       const cores = job ? job.strips.length : 1;
       setStatus(`Done in ${((performance.now() - (job ? job.t0 : 0)) / 1000).toFixed(1)} s on ${cores} core${cores > 1 ? 's' : ''}`);
       draw(); renderStats(); renderFrames(d.motion);
-      ['savePng', 'saveJpg', 'saveDepth', 'saveRef'].forEach(id => $(id).disabled = false);
+      ['savePng', 'saveJpg', 'saveDepth', 'saveRef', 'shareRes'].forEach(id => $(id).disabled = false);
       Draw.onResult();
     }
   }
@@ -1279,6 +1407,42 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
   }
+  // sharing to other apps (Web Share API level 2: iOS/iPadOS share sheet, Android, Windows, macOS)
+  // Safari only lets navigator.share() run shortly after a tap. Encoding a large stack can take longer than that,
+  // so when the share is refused for lack of a tap, the prepared files are kept and the next tap shares them at once.
+  let ready = null; // { key, files, title, btn, label }
+  const canShareFiles = files => { try { return !!(navigator.share && navigator.canShare && navigator.canShare({ files })); } catch { return false; } };
+  function shareOrSave(files, title, btn, key) {
+    if (!files.length) return;
+    if (!canShareFiles(files)) {
+      // e.g. desktop Firefox, an embedded preview, or a file type the browser will not share: save instead
+      setStatus('This browser cannot share these files, so they were saved instead' + (files.length > 1 ? ` (${files.length} files)` : '') + '.');
+      return (async () => { for (const f of files) await saveBlob(f, f.name); })();
+    }
+    return navigator.share({ files, title }).then(() => { setStatus('Shared ' + files.map(f => f.name).join(', ')); clearReady(); }, e => {
+      if (e && e.name === 'AbortError') { setStatus('Share cancelled.'); clearReady(); return; }
+      if (e && e.name === 'NotAllowedError' && !(ready && ready.key === key)) {
+        clearReady(); ready = { key, files, title, btn, label: btn.textContent }; btn.textContent = 'Ready: tap to share';
+        setStatus('The file is ready. Tap “Ready: tap to share” to open the share sheet.'); return;
+      }
+      clearReady();
+      setStatus('Sharing was refused here (' + ((e && e.name) || 'error') + '), so the file was saved instead.');
+      return (async () => { for (const f of files) await saveBlob(f, f.name); })();
+    });
+  }
+  function clearReady() { if (ready) { ready.btn.textContent = ready.label; ready = null; } }
+  // returns true if a prepared share for this key was sent synchronously inside the tap
+  function shareReady(key) { if (ready && ready.key === key) { const r = ready; shareOrSave(r.files, r.title, r.btn, key); return true; } clearReady(); return false; }
+  const toFile = (blob, name) => new File([blob], name, { type: blob.type });
+  const canvasFile = async (c, name, type, q) => { const b = await new Promise(r => c.toBlob(r, type || 'image/png', q)); if (!b) throw new Error('could not encode the image'); return toFile(b, name); };
+  $('shareRes').onclick = async () => {
+    const btn = $('shareRes'), key = ['result', runId, $('umpp').value, result && result.w].join('|');
+    if (shareReady(key)) return;
+    btn.disabled = true; setStatus('Preparing the image…');
+    try { await shareOrSave([await canvasFile($('cvResult'), baseName() + '.png')], baseName(), btn, key); }
+    catch (e) { setStatus('Could not share: ' + (e.message || e), true); }
+    finally { btn.disabled = !result; }
+  };
   $('savePng').onclick = () => save('cvResult', baseName() + '.png', 'image/png');
   $('saveJpg').onclick = () => save('cvResult', baseName() + '.jpg', 'image/jpeg', 0.95);
   $('saveRef').onclick = () => {
@@ -1409,7 +1573,8 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       $('undoBtn').disabled = !undo.length; $('redoBtn').disabled = !redo.length;
       const none = !W || !strokes.length;
       ['inkClear', 'inkPng', 'inkSvg', 'inkSave'].forEach(id => $(id).disabled = none);
-      $('inkComp').disabled = !W;
+      $('inkComp').disabled = $('inkPsd').disabled = !W;
+      const w = $('shareWhat').value; $('inkShare').disabled = !W || (none && (w === 'ink' || w === 'svg'));
     }
 
     // --- view
@@ -1762,6 +1927,49 @@ async function makeDemo({ rgba, w, h, depth, n }) {
       return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">\n<desc>${esc(desc)}</desc>` +
         (defs ? `\n<defs>${defs}\n</defs>` : '') + `\n<g id="drawing" stroke-linecap="round" stroke-linejoin="round">${body}\n</g>${bar}\n</svg>\n`;
     }
+    // layered Photoshop file: [white paper if the background is faded] + background + drawing [+ scale bar]
+    function layerPixels(draw) {
+      const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d', { willReadFrequently: true });
+      draw(g); return g.getImageData(0, 0, W, H).data;
+    }
+    function buildPSD() {
+      const fade = +$('bgOp').value / 100, layers = [];
+      if (fade < 1) layers.push({ name: 'Paper', rgba: layerPixels(g => { g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); }) });
+      layers.push({ name: label(bgKey), rgba: layerPixels(g => g.drawImage(bg, 0, 0)), opacity: fade });
+      layers.push({ name: 'Drawing', rgba: ink.getContext('2d').getImageData(0, 0, W, H).data });
+      if ($('inkBar').checked && scaleBar()) layers.push({ name: 'Scale bar', rgba: layerPixels(barOnCanvas) });
+      const comp = flat(true).getContext('2d').getImageData(0, 0, W, H).data;
+      return new Blob(PSD.encodePSD(W, H, layers, comp), { type: 'image/vnd.adobe.photoshop' });
+    }
+    const psdName = () => `${drawName()}_on_${bgName(bgKey)}.psd`;
+    $('inkPsd').onclick = async () => {
+      setStatus('Writing the PSD…'); await new Promise(r => setTimeout(r, 30));
+      try { await saveBlob(buildPSD(), psdName()); dirty = false; } catch (e) { setStatus('Could not write the PSD: ' + (e.message || e), true); }
+    };
+    async function shareFilesFor(what) {
+      const png = (c, n) => canvasFile(c, n);
+      if (what === 'psd') {
+        // some browsers only share a fixed list of file types; try the Photoshop type, then a generic one
+        const b = buildPSD(), f = toFile(b, psdName());
+        return canShareFiles([f]) ? [f] : [new File([b], psdName(), { type: 'application/octet-stream' })];
+      }
+      if (what === 'comp') return [await png(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`)];
+      if (what === 'ink') return [await png(flat(false), drawName() + '.png')];
+      if (what === 'svg') return [toFile(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg')];
+      // two same-size PNGs: background first, so an app that stacks imports in order puts the lines on top
+      const c = document.createElement('canvas'); c.width = W; c.height = H; c.getContext('2d').drawImage(bg, 0, 0);
+      return [await png(c, `${baseName().replace(/_stacked$/, '')}_${bgName(bgKey)}.png`), await png(flat(false), drawName() + '.png')];
+    }
+    const shareKey = () => [$('shareWhat').value, bgKey, $('bgOp').value, $('inkBar').checked, strokes.length, undo.length, redo.length, W, H].join('|');
+    $('inkShare').onclick = async () => {
+      const btn = $('inkShare'), key = shareKey(), what = $('shareWhat').value;
+      if (shareReady(key)) return;
+      btn.disabled = true; setStatus('Preparing the file…'); await new Promise(r => setTimeout(r, 30));
+      try { await shareOrSave(await shareFilesFor(what), drawName(), btn, key); if (what !== 'layers' || strokes.length) dirty = false; }
+      catch (e) { setStatus('Could not share: ' + (e.message || e), true); }
+      finally { buttons(); }
+    };
+    $('shareWhat').onchange = () => { clearReady(); buttons(); };
     $('inkPng').onclick = async () => { await saveCanvas(flat(false), drawName() + '.png'); dirty = false; };
     $('inkComp').onclick = () => saveCanvas(flat(true), `${drawName()}_on_${bgName(bgKey)}.png`);
     $('inkSvg').onclick = async () => { await saveBlob(new Blob([toSVG()], { type: 'image/svg+xml' }), drawName() + '.svg'); dirty = false; };
